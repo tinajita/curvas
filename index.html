@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Avisador">
+    
+    <title>Avisador de Curvas Inteligente (con Sonido)</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; overflow: hidden; height: 100vh; }
+        #main-container { display: flex; flex-direction: column; width: 100%; height: 100%; transition: all 0.3s ease-in-out; }
+        #map { 
+            height: 50%; 
+            width: 100%; 
+            background-color: #333; 
+            transition: height 0.3s ease-in-out;
+            position: relative; /* ¡IMPORTANTE! Añadido para posicionar la 'X' correctamente */
+        }
+        #dashboard { height: 50%; width: 100%; position: relative; transition: height 0.3s ease-in-out; }
+        #app-screen { transition: background-color 0.5s ease-in-out; }
+        .status-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        
+        .vehicle-icon { transition: transform 0.2s linear; }
+
+        .map-hidden #map { height: 0%; }
+        .map-hidden #dashboard { height: 100%; }
+        /* Estilo adicional para el botón 'X' para asegurar visibilidad */
+        #hide-map-btn {
+            z-index: 9999; /* Valor de z-index muy alto */
+        }
+    </style>
+</head>
+<body class="bg-gray-900">
+
+    <div id="main-container">
+        <div id="map">
+            <!-- Botón para ocultar el mapa (X) dentro del mapa. 
+                Colores ajustados para ser más discreto pero visible. -->
+            <button id="hide-map-btn" class="absolute top-2 right-2 bg-gray-700 text-white w-9 h-9 rounded-full flex items-center justify-center font-bold text-lg">X</button>
+        </div>
+        <div id="dashboard">
+            <div id="app-screen" class="w-full h-full flex flex-col text-white p-4 bg-gray-800">
+                
+                <!-- Contenedor de botones de modo: Alineado a la izquierda -->
+                <div class="w-full flex justify-start items-center absolute top-0 left-0 z-20 pl-4 pr-3 py-3">
+                    <div class="p-2 rounded-2xl flex justify-start items-center gap-2">
+                        <button id="mode-normal" data-mode="normal" class="mode-button px-4 py-2 rounded-full text-base font-bold shadow-lg transition-all duration-300 ease-in-out flex items-center justify-center bg-blue-600 text-white">Normal</button>
+                        <button id="mode-sport" data-mode="sport" class="mode-button px-4 py-2 rounded-full text-base font-bold shadow-lg transition-all duration-300 ease-in-out flex items-center justify-center bg-red-600 text-white">Sport</button>
+                    </div>
+                </div>
+
+                <!-- Contenedor del botón MAPA: Arriba a la derecha, visible solo cuando el mapa está oculto -->
+                <div id="show-map-btn-container" class="absolute top-2 right-2 z-50 hidden">
+                    <button id="show-map-btn" class="ml-4 px-4 py-2 rounded-full text-base font-bold shadow-lg bg-gray-600 text-white">MAPA</button>
+                </div>
+
+                <!-- Contenido principal del dashboard: Reestructurado para el nuevo layout -->
+                <div class="flex-grow flex flex-col items-center justify-between z-10 pt-20 pb-2">
+                    <!-- Contenedor principal para la señal, la curva y la velocidad/distancia -->
+                    <div class="w-full flex items-center justify-around md:gap-8 px-4">
+                        <!-- Sección de Velocidad Recomendada (Icono de Señal de Tráfico) -->
+                        <div class="flex flex-col items-center text-center">
+                            <!-- Se eliminó el texto "Velocidad Rec." -->
+                            <svg viewBox="0 0 100 100" class="w-16 h-16 md:w-20 md:h-20">
+                                <circle cx="50" cy="50" r="45" stroke="#ef4444" stroke-width="6" fill="#f8fafc" />
+                                <text id="recommended-speed-icon-text" x="50" y="58" text-anchor="middle" font-size="30" font-weight="bold" fill="#0f172a">--</text>
+                            </svg>
+                        </div>
+
+                        <!-- Sección de la curva: Más grande y centrada -->
+                        <div class="flex flex-col items-center justify-center">
+                            <svg viewBox="0 0 100 100" class="w-48 h-48 md:w-64 md:h-64">
+                                <path id="road-curve" d="M 50 95 L 50 5" stroke="white" stroke-width="10" fill="none" stroke-linecap="round" style="transition: d 0.5s ease-in-out;"></path>
+                            </svg>
+                            <p id="curve-type-text" class="text-lg font-bold">Recta</p>
+                        </div>
+
+                        <!-- Sección de velocidad actual y alerta, y distancia -->
+                        <div class="flex flex-col items-center text-right">
+                            <p id="alert-text" class="text-sm md:text-base font-black tracking-wider uppercase mb-1">INICIANDO</p>
+                            <p id="speed-text" class="text-5xl md:text-7xl font-bold">0</p>
+                            <p class="text-lg md:text-xl font-bold -mt-1 md:-mt-2">km/h</p>
+                            <p id="distance-to-curve-text" class="text-xs md:text-base opacity-80 mt-1 md:mt-2">Distancia: -- m</p>
+                        </div>
+                    </div>
+
+                    <!-- Sección de estado de ubicación, empujada hacia abajo -->
+                    <div class="w-full h-8 flex items-center justify-center mt-auto">
+                        <div id="location-status" class="text-center text-sm opacity-80 status-pulse">Buscando señal de GPS...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <script>
+        // --- CONFIGURACIÓN Y CONSTANTES --- 
+        // Las velocidades recomendadas iniciales que pueden ser adaptadas por el aprendizaje
+        const INITIAL_RECOMMENDED_SPEEDS = { straight: 120, open: 90, closed: 60 }; 
+        const OVERPASS_API_URL = "https://overpass-api.de/api/interpreter";
+        const ANALYSIS_RADIUS_METERS = 200;
+        const ANALYSIS_INTERVAL_MS = 8000;
+        const MIN_MOVEMENT_METERS = 20;
+        const RECENTER_TIMEOUT_MS = 5000;
+        const ALERT_THRESHOLDS = {
+            normal: { warning: 1.05, danger: 1.15 },
+            sport: { warning: 1.10, danger: 1.25 }
+        };
+
+        // --- REFERENCIAS A DOM --- 
+        const mainContainer = document.getElementById('main-container');
+        const appScreen = document.getElementById('app-screen');
+        const speedText = document.getElementById('speed-text');
+        const alertText = document.getElementById('alert-text');
+        const roadCurve = document.getElementById('road-curve');
+        const curveTypeText = document.getElementById('curve-type-text');
+        const recommendedSpeedIconText = document.getElementById('recommended-speed-icon-text'); 
+        const distanceToCurveText = document.getElementById('distance-to-curve-text');
+        const locationStatus = document.getElementById('location-status');
+        const modeNormalBtn = document.getElementById('mode-normal');
+        const modeSportBtn = document.getElementById('mode-sport');
+        const modeButtons = document.querySelectorAll('.mode-button');
+        const hideMapBtn = document.getElementById('hide-map-btn');
+        const showMapBtnContainer = document.getElementById('show-map-btn-container');
+        const showMapBtn = document.getElementById('show-map-btn');
+
+        // --- ESTADO GLOBAL --- 
+        let state = {
+            currentSpeed: 0.0,
+            curveType: 'straight',
+            currentLat: null,
+            currentLon: null,
+            lastAnalysisLat: null,
+            lastAnalysisLon: null,
+            isAnalyzing: false,
+            currentAlertLevel: 'initializing',
+            drivingMode: 'normal',
+            detectedCurvePoint: null,
+            detectedCurveDirection: 'none',
+            locationHistory: [],
+            userHeading: null,
+            map: null,
+            vehicleMarker: null,
+            pathTrace: null,
+            isMapManuallyControlled: false,
+            recenterTimer: null,
+            detectedMaxSpeed: null, // Velocidad máxima detectada de OSM (si existe)
+            detectedCurveAngle: null, // Ángulo de la curva detectada para cálculo dinámico
+            adaptiveRecommendedSpeeds: { ...INITIAL_RECOMMENDED_SPEEDS }, // Velocidades que "aprenden"
+        };
+
+        // --- LÓGICA DE SONIDOS (Web Audio API) --- 
+        let audioContext;
+        let currentOscillator = null;
+
+        function initializeAudioContext() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+        function playBeep(frequency, duration, volume) {
+            if (!audioContext) return;
+            if (currentOscillator) { currentOscillator.stop(); currentOscillator.disconnect(); }
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
+            gainNode.gain.setValueAtTime(volume, audioContext.currentTime);
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            oscillator.start();
+            oscillator.stop(audioContext.currentTime + duration);
+            currentOscillator = oscillator;
+        }
+        function stopBeep() {
+            if (currentOscillator) { currentOscillator.stop(); currentOscillator.disconnect(); currentOscillator = null; }
+        }
+
+        // --- LÓGICA DE LA INTERFAZ --- 
+        function updateUI() {
+            let actualRecommendedSpeed;
+
+            // Priorizar maxspeed de OSM, si no, usar la velocidad adaptativa
+            if (state.detectedMaxSpeed !== null) {
+                actualRecommendedSpeed = state.detectedMaxSpeed;
+            } else {
+                actualRecommendedSpeed = calculateDynamicRecommendedSpeed(state.detectedCurveAngle);
+            }
+            
+            const thresholds = ALERT_THRESHOLDS[state.drivingMode];
+            let newAlertLevel = 'safe';
+
+            if (state.currentSpeed > actualRecommendedSpeed * thresholds.danger) {
+                newAlertLevel = 'danger';
+                // Aprendizaje: Si hay peligro y no hay maxspeed de OSM, reducir la velocidad adaptativa
+                if (state.detectedMaxSpeed === null && state.curveType !== 'straight') {
+                    state.adaptiveRecommendedSpeeds[state.curveType] = Math.max(state.adaptiveRecommendedSpeeds[state.curveType] * 0.98, 30); // Límite inferior 30 km/h
+                    saveAdaptiveSpeeds();
+                }
+            } else if (state.currentSpeed > actualRecommendedSpeed * thresholds.warning) {
+                newAlertLevel = 'warning';
+            } else {
+                // Aprendizaje: Si es seguro y no hay maxspeed de OSM, y la velocidad actual es razonable, aumentar ligeramente la velocidad adaptativa
+                if (state.detectedMaxSpeed === null && state.curveType !== 'straight' && state.currentSpeed > actualRecommendedSpeed * 0.8) {
+                    state.adaptiveRecommendedSpeeds[state.curveType] = Math.min(state.adaptiveRecommendedSpeeds[state.curveType] * 1.005, 120); // Límite superior 120 km/h
+                    saveAdaptiveSpeeds();
+                }
+            }
+
+            if (newAlertLevel !== state.currentAlertLevel) {
+                switch (newAlertLevel) {
+                    case 'warning': playBeep(1200, 0.1, 0.5); break;
+                    case 'danger': playBeep(1600, 0.3, 0.7); break;
+                    default: stopBeep(); break;
+                }
+            }
+            state.currentAlertLevel = newAlertLevel;
+            switch (newAlertLevel) {
+                case 'danger': appScreen.style.backgroundColor = '#ef4444'; alertText.textContent = `PELIGRO!`; break; 
+                case 'warning': appScreen.style.backgroundColor = '#f97316'; alertText.textContent = `ATENCIÓN`; break;
+                case 'safe': appScreen.style.backgroundColor = '#22c55e'; alertText.textContent = 'VELOCIDAD SEGURA'; break;
+                case 'initializing': appScreen.style.backgroundColor = '#3b82f6'; alertText.textContent = 'INICIANDO GPS'; break;
+            }
+            speedText.textContent = Math.round(state.currentSpeed);
+            recommendedSpeedIconText.textContent = Math.round(actualRecommendedSpeed); // Actualiza el texto del icono de velocidad recomendada
+            const distance = (state.curveType !== 'straight' && state.detectedCurvePoint && state.currentLat !== null)
+                ? getDistance(state.currentLat, state.currentLon, state.detectedCurvePoint.lat, state.detectedCurvePoint.lon)
+                : null;
+            distanceToCurveText.textContent = distance !== null ? `Distancia: ${Math.round(distance)} m` : `Distancia: -- m`;
+        }
+        
+        // --- LÓGICA DEL MAPA --- 
+        function initializeMap(lat, lon) {
+            // Solo inicializa el mapa si aún no existe 
+            if (state.map) return; 
+            state.map = L.map('map', { zoomControl: false }).setView([lat, lon], 18);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(state.map);
+            const vehicleIcon = L.divIcon({
+                html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-8 h-8 text-blue-500"><path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25Zm.53 5.47a.75.75 0 0 0-1.06 0l-3 3a.75.75 0 1 0 1.06 1.06l1.72-1.72v5.69a.75.75 0 0 0 1.5 0v-5.69l1.72 1.72a.75.75 0 1 0 1.06-1.06l-3-3Z" clip-rule="evenodd" /></svg>`,
+                className: 'vehicle-icon', iconSize: [24, 24], iconAnchor: [12, 12]
+            });
+            state.vehicleMarker = L.marker([lat, lon], { icon: vehicleIcon }).addTo(state.map);
+            state.pathTrace = L.polyline([], { color: '#007BFF', weight: 5 }).addTo(state.map);
+
+            state.map.on('movestart', () => {
+                state.isMapManuallyControlled = true;
+                if (state.recenterTimer) clearTimeout(state.recenterTimer);
+            });
+            state.map.on('moveend', () => {
+                state.recenterTimer = setTimeout(() => {
+                    state.isMapManuallyControlled = false;
+                    recenterMap(); 
+                }, RECENTER_TIMEOUT_MS);
+            });
+        }
+
+        function updateMap(lat, lon, heading) {
+            if (!state.map) initializeMap(lat, lon); 
+            
+            const newLatLng = new L.LatLng(lat, lon);
+            state.vehicleMarker.setLatLng(newLatLng);
+            state.pathTrace.addLatLng(newLatLng);
+            if (!state.isMapManuallyControlled) state.map.setView(newLatLng);
+            if (heading !== null && state.vehicleMarker._icon) state.vehicleMarker._icon.style.transform = `rotate(${heading}deg)`;
+        }
+        
+        function recenterMap() {
+            if (state.map && state.vehicleMarker && !state.isMapManuallyControlled) {
+                state.map.setView(state.vehicleMarker.getLatLng(), state.map.getZoom(), { animate: true, pan: { duration: 1 } });
+            }
+        }
+
+        function showMap() {
+            mainContainer.classList.remove('map-hidden');
+            hideMapBtn.classList.remove('hidden'); // Hace visible el botón 'X'
+            showMapBtnContainer.classList.add('hidden'); // Oculta el botón 'MAPA'
+            setTimeout(() => { if (state.map) state.map.invalidateSize() }, 10);
+        }
+
+        function hideMap() {
+            mainContainer.classList.add('map-hidden');
+            hideMapBtn.classList.add('hidden'); // Oculta el botón 'X'
+            showMapBtnContainer.classList.remove('hidden'); // Hace visible el botón 'MAPA'
+        }
+
+        // --- NÚCLEO DE GEOLOCALIZACIÓN --- 
+        function startGeolocation() {
+            if (!('geolocation' in navigator)) {
+                locationStatus.textContent = "Error: Geolocalización no soportada por el navegador.";
+                return;
+            }
+            navigator.geolocation.watchPosition((position) => {
+                if (locationStatus.classList.contains('status-pulse')) locationStatus.classList.remove('status-pulse');
+                locationStatus.textContent = "GPS Activo";
+                state.currentLat = position.coords.latitude;
+                state.currentLon = position.coords.longitude;
+                state.locationHistory.push({ lat: state.currentLat, lon: state.currentLon });
+                if (state.locationHistory.length > 5) state.locationHistory.shift();
+                state.userHeading = calculateUserHeading();
+                state.currentSpeed = position.coords.speed !== null ? position.coords.speed * 3.6 : 0;
+                updateMap(state.currentLat, state.currentLon, position.coords.heading ?? state.userHeading);
+                updateUI();
+            }, (error) => {
+                locationStatus.textContent = `Error de GPS: ${error.message}`;
+            }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+        }
+
+        // --- LÓGICA DE ANÁLISIS AUTOMÁTICO --- 
+        async function analysisLoop() {
+            if (state.isAnalyzing || !state.currentLat || state.userHeading === null) return;
+            const movedDistance = state.lastAnalysisLat ? getDistance(state.currentLat, state.currentLon, state.lastAnalysisLat, state.lastAnalysisLon) : MIN_MOVEMENT_METERS + 1;
+            if (movedDistance < MIN_MOVEMENT_METERS) return;
+
+            state.isAnalyzing = true;
+            locationStatus.textContent = "Analizando mapa...";
+            try {
+                // Se solicita la etiqueta 'tags' para obtener 'maxspeed'
+                const query = `[out:json];(way["highway"~"^(primary|secondary|tertiary|trunk|motorway|unclassified|residential)(_link)?$"](around:${ANALYSIS_RADIUS_METERS},${state.currentLat},${state.currentLon}););out geom tags;`;
+                const response = await fetch(OVERPASS_API_URL, { method: 'POST', body: "data=" + encodeURIComponent(query) });
+                if (!response.ok) throw new Error(`Respuesta de OSM: ${response.status}`);
+                const data = await response.json();
+                const detectedCurve = findNextCurve(data.elements, { lat: state.currentLat, lon: state.currentLon }, state.userHeading);
+                state.curveType = detectedCurve.type;
+                state.detectedCurvePoint = detectedCurve.point;
+                state.detectedCurveDirection = detectedCurve.direction;
+                state.detectedMaxSpeed = detectedCurve.maxspeed; 
+                state.detectedCurveAngle = detectedCurve.curveAngle; // Almacena el ángulo de la curva
+                updateCurveDisplay(detectedCurve.type, detectedCurve.direction); 
+                state.lastAnalysisLat = state.currentLat;
+                state.lastAnalysisLon = state.currentLon;
+            } catch (error) {
+                locationStatus.textContent = `Error de red: ${error.message}`;
+            } finally {
+                setTimeout(() => { if (state.currentLat) locationStatus.textContent = "GPS Activo"; }, 2000);
+                state.isAnalyzing = false;
+            }
+        }
+        
+        function findNextCurve(elements, userPos, userHeading) {
+            if (!elements || elements.length === 0) return { type: 'straight', maxspeed: null, curveAngle: 180 }; 
+            let closestRoad = null, minDistance = Infinity;
+            elements.forEach(road => {
+                if (road.type !== 'way' || !road.geometry) return;
+                road.geometry.forEach(point => {
+                    const dist = getDistance(userPos.lat, userPos.lon, point.lat, point.lon);
+                    if (dist < minDistance) { minDistance = dist; closestRoad = road; }
+                });
+            });
+            if (!closestRoad || minDistance > 50) return { type: 'straight', maxspeed: null, curveAngle: 180 }; 
+            
+            let maxSpeed = null;
+            if (closestRoad.tags && closestRoad.tags.maxspeed) {
+                const parsedSpeed = parseInt(closestRoad.tags.maxspeed, 10);
+                if (!isNaN(parsedSpeed)) {
+                    maxSpeed = parsedSpeed;
+                }
+            }
+
+            let closestPointIndex = -1;
+            minDistance = Infinity;
+            closestRoad.geometry.forEach((point, i) => {
+                const dist = getDistance(userPos.lat, userPos.lon, point.lat, point.lon);
+                if (dist < minDistance) { minDistance = dist; closestPointIndex = i; }
+            });
+
+            // Si no hay suficientes puntos para calcular una curva hacia adelante
+            if (closestPointIndex < 0 || closestPointIndex >= closestRoad.geometry.length - 2) {
+                return { type: 'straight', maxspeed: maxSpeed, curveAngle: 180 }; 
+            }
+
+            const p1 = closestRoad.geometry[closestPointIndex], p2 = closestRoad.geometry[closestPointIndex + 1];
+            const roadHeading = getAngleBetweenPoints(p1, p2);
+            const headingDiff = Math.abs(userHeading - roadHeading);
+
+            // Solo analizar curvas si el vehículo va en la dirección de la carretera
+            if (Math.min(headingDiff, 360 - headingDiff) < 90) {
+                for (let i = closestPointIndex + 1; i < closestRoad.geometry.length - 1; i++) {
+                    const pA = closestRoad.geometry[i - 1], pB = closestRoad.geometry[i], pC = closestRoad.geometry[i + 1];
+                    const angle = getAngle(pA, pB, pC);
+                    if (angle < 175) { // Se detecta una curva si el ángulo es menor de 175 grados
+                        return { 
+                            type: angle < 165 ? 'closed' : 'open', 
+                            point: pB, 
+                            direction: getTurnDirection(pA, pB, pC), 
+                            maxspeed: maxSpeed,
+                            curveAngle: angle // Incluye el ángulo calculado para la curva
+                        }; 
+                    }
+                }
+            }
+            return { type: 'straight', maxspeed: maxSpeed, curveAngle: 180 }; 
+        }
+
+        // Función para calcular la velocidad recomendada basada en el ángulo de la curva
+        function calculateDynamicRecommendedSpeed(angle) {
+            if (angle === null) return state.adaptiveRecommendedSpeeds['straight']; 
+
+            // Adaptar la velocidad base según la agudeza del ángulo
+            if (angle < 90) return state.adaptiveRecommendedSpeeds['closed'] * 0.6; // Curvas muy cerradas (ej. horquillas)
+            if (angle < 130) return state.adaptiveRecommendedSpeeds['closed'];      // Curvas cerradas
+            if (angle < 160) return state.adaptiveRecommendedSpeeds['open'];        // Curvas abiertas
+            return state.adaptiveRecommendedSpeeds['straight'];                     // Tramo relativamente recto
+        }
+        
+        function updateCurveDisplay(type, direction) {
+            switch (type) {
+                case 'closed': roadCurve.setAttribute('d', direction === 'right' ? 'M 50 95 Q 110 50 50 5' : 'M 50 95 Q -10 50 50 5'); curveTypeText.textContent = 'Curva Cerrada'; break;
+                case 'open': roadCurve.setAttribute('d', direction === 'right' ? 'M 50 95 Q 70 50 50 5' : 'M 50 95 Q 30 50 50 5'); curveTypeText.textContent = 'Curva Abierta'; break;
+                default: roadCurve.setAttribute('d', 'M 50 95 L 50 5'); curveTypeText.textContent = 'Recta'; break;
+            }
+            updateUI(); 
+        }
+
+        // --- FUNCIONES MATEMÁTICAS Y AUXILIARES --- 
+        function getDistance(lat1,lon1,lat2,lon2){const R=6371e3,f1=lat1*Math.PI/180,f2=lat2*Math.PI/180,df=(lat2-lat1)*Math.PI/180,dl=(lon2-lon1)*Math.PI/180;const a=Math.sin(df/2)*Math.sin(df/2)+Math.cos(f1)*Math.cos(f2)*Math.sin(dl/2)*Math.sin(dl/2);return R*(2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a)))}
+        function getAngle(A,B,C){const vBA={lat:A.lat-B.lat,lon:A.lon-B.lon},vBC={lat:C.lat-B.lat,lon:C.lon-B.lon};const dot=vBA.lat*vBC.lat+vBA.lon*vBC.lon,magBA=Math.sqrt(vBA.lat**2+vBA.lon**2),magBC=Math.sqrt(vBC.lat**2+vBC.lon**2);if(magBA===0||magBC===0)return 180;return Math.acos(Math.max(-1,Math.min(1,dot/(magBA*magBC))))*180/Math.PI}
+        function calculateUserHeading(){if(state.locationHistory.length<2)return null;return getAngleBetweenPoints(state.locationHistory[state.locationHistory.length-2],state.locationHistory[state.locationHistory.length-1])}
+        function getAngleBetweenPoints(p1,p2){let a=Math.atan2(p2.lon-p1.lon,p2.lat-p1.lat)*180/Math.PI;return a<0?a+360:a}
+        function getTurnDirection(A,B,C){const v=(B.lon-A.lon)*(C.lat-B.lat)-(B.lat-A.lat)*(C.lon-B.lon);if(v>0)return'left';if(v<0)return'right';return'none'}
+
+        // --- FUNCIONES DE LOCALSTORAGE PARA APRENDIZAJE ---
+        function loadAdaptiveSpeeds() {
+            const savedSpeeds = localStorage.getItem('adaptiveRecommendedSpeeds');
+            if (savedSpeeds) {
+                try {
+                    const parsed = JSON.parse(savedSpeeds);
+                    // Asegurarse de que se carguen todas las propiedades y mantener los valores iniciales si faltan
+                    state.adaptiveRecommendedSpeeds = { ...INITIAL_RECOMMENDED_SPEEDS, ...parsed };
+                } catch (e) {
+                    console.error("Error al cargar velocidades adaptativas de localStorage:", e);
+                }
+            }
+        }
+
+        function saveAdaptiveSpeeds() {
+            localStorage.setItem('adaptiveRecommendedSpeeds', JSON.stringify(state.adaptiveRecommendedSpeeds));
+        }
+
+        // --- MANEJO DE MODOS DE CONDUCCIÓN --- 
+        function setDrivingMode(mode) {
+            modeNormalBtn.classList.remove('ring-4', 'ring-blue-300', 'scale-110');
+            modeSportBtn.classList.remove('ring-4', 'ring-red-300', 'scale-110');
+            if (mode === 'normal') modeNormalBtn.classList.add('ring-4', 'ring-blue-300', 'scale-110');
+            else if (mode === 'sport') modeSportBtn.classList.add('ring-4', 'ring-red-300', 'scale-110');
+            state.drivingMode = mode;
+            updateUI();
+        }
+
+        // --- INICIALIZACIÓN --- 
+        hideMapBtn.addEventListener('click', hideMap);
+        showMapBtn.addEventListener('click', showMap);
+        modeButtons.forEach(button => button.addEventListener('click', () => setDrivingMode(button.dataset.mode)));
+        document.body.addEventListener('click', initializeAudioContext, { once: true });
+        document.body.addEventListener('touchstart', initializeAudioContext, { once: true });
+        
+        // Carga las velocidades adaptativas guardadas al iniciar
+        loadAdaptiveSpeeds();
+
+        // Inicializa el mapa inmediatamente con una ubicación por defecto (Madrid) 
+        initializeMap(40.416775, -3.703790); 
+        showMap(); // Asegura que el mapa se muestre y la "X" sea visible 
+        
+        updateUI(); // Primera actualización de la UI
+        startGeolocation();
+        setInterval(analysisLoop, ANALYSIS_INTERVAL_MS);
+        setDrivingMode(state.drivingMode); // Configura el modo de conducción inicial
+    </script>
+</body>
+</html>

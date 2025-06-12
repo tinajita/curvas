@@ -81,7 +81,7 @@
         </div>
     </div>
     
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxTlZBo=" crossorigin=""></script>
 
     <script>
         const OVERPASS_API_URL = "https://overpass-api.de/api/interpreter";
@@ -91,9 +91,10 @@
         const CURVE_ALERT_DISTANCE = 250;
         const ALERT_THRESHOLDS = { normal: { warning: 1.05, danger: 1.15 }, sport: { warning: 1.10, danger: 1.25 } };
         const DEFAULT_SPEEDS_BY_HIGHWAY_TYPE = { motorway: 120, trunk: 100, primary: 90, secondary: 80, tertiary: 70, motorway_link: 80, trunk_link: 60, primary_link: 60, secondary_link: 50, residential: 40, unclassified: 50, 'default': 50 };
-        // CAMBIO AQUÍ: Usando capas de OpenStreetMap para un mapa más claro
-        const TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-        const TILE_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+        
+        // **CAMBIO AQUÍ: Usando capas de Stamen Toner Lite para un mapa más simple**
+        const TILE_URL = 'https://stamen-tiles-{s}.a.ssl.fastly.net/toner-lite/{z}/{x}/{y}{r}.png';
+        const TILE_ATTRIBUTION = 'Map tiles by <a href="http://stamen.com">Stamen Design</a>, <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a> &mdash; Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
         const mainContainer = document.getElementById('main-container');
         const locationStatus = document.getElementById('location-status');
@@ -216,7 +217,7 @@
                     if (nextCurve.type !== 'straight' && nextCurve.distance <= CURVE_ALERT_DISTANCE) {
                         state.isCurveAlertActive = true;
                         const curveLatLngs = nextCurve.points.map(p => [p.lat, p.lon]);
-                        // El color amarillo debería verse bien en el mapa claro
+                        // El color amarillo (#facc15) debería seguir destacando bien en el mapa Toner Lite
                         L.polyline(curveLatLngs, { color: '#facc15', weight: 16, lineCap: 'round', lineJoin: 'round' }).addTo(state.curveHighlightLayer);
                     }
                     state.curveType = nextCurve.type; state.distanceToCurve = nextCurve.distance; state.curveDirection = nextCurve.direction;

@@ -47,8 +47,19 @@
         .map-hidden #distance-to-curve-text { font-size: 1.25rem; margin-top: 0.5rem; }
         
         #map .leaflet-map-pane { transition: transform 0.1s linear; }
-        /* El icono del vehículo también necesita una transición suave */
-        #map .vehicle-icon { transition: transform 0.1s linear; }
+        /* El icono del vehículo ahora NO NECESITA una transición suave, porque no se mueve. */
+        /* Eliminamos la transición en el icono del vehículo para que no interfiera */
+        /* #map .vehicle-icon { transition: transform 0.1s linear; } */
+
+        /* CSS para mantener la flecha del vehículo fija en el centro inferior */
+        #map .vehicle-icon {
+            position: absolute !important;
+            top: unset !important; /* Elimina cualquier posición 'top' que pueda tener Leaflet */
+            bottom: calc(50% - 24px) !important; /* Mueve el icono 24px (la mitad de su altura) desde el centro hacia abajo */
+            left: calc(50% - 24px) !important; /* Centra el icono horizontalmente */
+            z-index: 1000; /* Asegura que esté por encima de las capas del mapa */
+            transform: rotate(0deg) !important; /* Asegura que la flecha siempre apunte hacia arriba */
+        }
 
     </style>
 </head>
@@ -92,7 +103,7 @@
         const ALERT_THRESHOLDS = { normal: { warning: 1.05, danger: 1.15 }, sport: { warning: 1.10, danger: 1.25 } };
         const DEFAULT_SPEEDS_BY_HIGHWAY_TYPE = { motorway: 120, trunk: 100, primary: 90, secondary: 80, tertiary: 70, motorway_link: 80, trunk_link: 60, primary_link: 60, secondary_link: 50, residential: 40, unclassified: 50, 'default': 50 };
         
-        // **CAMBIO AQUÍ: Usando capas de Stamen Toner Lite para un mapa más simple**
+        // Usando capas de Stamen Toner Lite
         const TILE_URL = 'https://stamen-tiles-{s}.a.ssl.fastly.net/toner-lite/{z}/{x}/{y}{r}.png';
         const TILE_ATTRIBUTION = 'Map tiles by <a href="http://stamen.com">Stamen Design</a>, <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a> &mdash; Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
@@ -124,7 +135,21 @@
         
         function initializeMap(lat, lon) {
             if (state.map) return;
-            state.map = L.map('map', { zoomControl: false, attributionControl: false, zoomAnimation: false }).setView([lat, lon], 18);
+            state.map = L.map('map', { 
+                zoomControl: false, 
+                attributionControl: false, 
+                zoomAnimation: false,
+                // NUEVO: Ajusta el punto de anclaje para que la flecha quede en la parte inferior central
+                // El segundo valor (0.25) significa 25% de la altura de la pantalla desde la parte inferior
+                // Un valor de 0.5 sería el centro. Un valor de 0 sería la parte superior.
+                // Ajustamos para que quede más cerca del 50% para que el "coche" quede hacia abajo.
+                center: [lat, lon], // Se establecerá dinámicamente en updateMap
+                zoom: 18,
+                // NUEVO: Define el "padding" o desplazamiento para el centrado del mapa
+                paddingBottomRight: [0, 0], // Sin padding abajo-derecha
+                paddingTopLeft: [0, 0], // Sin padding arriba-izquierda
+                maxBoundsViscosity: 1.0 // Evita que el mapa se salga de los límites
+            }).setView([lat, lon], 18);
             L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: 19 }).addTo(state.map);
             
             // Crear el marcador del vehículo
@@ -132,8 +157,9 @@
                 html: `<svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12" viewBox="0 0 24 24"><defs><filter id="shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000000" flood-opacity="0.5"/></filter></defs><path fill="#2563eb" d="M12 2L2.5 21.5L12 17L21.5 21.5L12 2Z" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round" filter="url(#shadow)"/></svg>`,
                 className: 'vehicle-icon',
                 iconSize: [48, 48],
-                iconAnchor: [24, 24]
+                iconAnchor: [24, 24] // El anclaje sigue siendo el centro del icono
             });
+            // El marcador se añade en una posición arbitraria, luego el CSS lo fijará
             state.vehicleMarker = L.marker([lat, lon], { icon: vehicleIcon }).addTo(state.map);
 
             state.curveHighlightLayer = L.layerGroup().addTo(state.map);
@@ -145,15 +171,33 @@
             const markerIcon = state.vehicleMarker?._icon;
             if (!mapPane || !markerIcon) return;
             
-            // Centrar el mapa en la posición y mover el marcador
-            const currentLatLng = L.latLng(state.displayLat, state.displayLon);
-            state.map.setView(currentLatLng, state.map.getZoom(), { animate: false, pan: { animate: false } });
-            state.vehicleMarker.setLatLng(currentLatLng);
+            // **NUEVO: Centrar el mapa con un offset para que la flecha quede abajo**
+            // Calcular el punto central de la pantalla (Lat/Lon)
+            const mapCenter = state.map.getCenter();
             
-            // Rotar el panel del mapa
+            // Calcular el offset en píxeles. Queremos que la flecha, que es de 48x48px,
+            // esté a 24px (la mitad de su altura) por encima del centro inferior del mapa.
+            // Es decir, queremos que el centro de la flecha esté a `(mapHeight / 2) + 24px` desde la parte superior
+            // o a `(mapHeight / 2) - 24px` desde la parte inferior.
+            // Para que la flecha quede en el 75% inferior del mapa (por ejemplo),
+            // el centro del mapa debe estar desplazado hacia arriba.
+            // Una forma simple es mover el centro del mapa ligeramente hacia adelante (en dirección del heading).
+            
+            const offsetDistanceMeters = 50; // Distancia en metros para desplazar el centro del mapa
+            const offsetLatLng = L.Util.destination(L.latLng(state.targetLat, state.targetLon), offsetDistanceMeters, state.targetHeading);
+
+            state.map.setView(offsetLatLng, state.map.getZoom(), { animate: false, pan: { animate: false } });
+            
+            // **IMPORTANTE**: No actualizamos la posición del marcador aquí.
+            // Su posición en la pantalla ahora será fija mediante CSS.
+            // state.vehicleMarker.setLatLng(currentLatLng); // ¡NO MUEVAS EL MARCADOR AQUÍ!
+
+            // **Rotar el panel del mapa**
             mapPane.style.transform = `rotate(${-state.displayHeading}deg)`;
-            // Contra-rotar el icono del marcador para que siempre apunte hacia arriba
-            markerIcon.style.transform += ` rotate(${state.displayHeading}deg)`;
+            
+            // **IMPORTANTE**: NO contra-rotamos el icono del marcador aquí.
+            // El CSS ya lo asegura para que siempre apunte hacia arriba.
+            // markerIcon.style.transform += ` rotate(${state.displayHeading}deg)`; // ¡NO ROTA EL MARCADOR AQUÍ!
         }
 
         let animationFrameId = null;
@@ -175,7 +219,7 @@
                 const { latitude, longitude, speed, accuracy, heading } = position.coords;
                 if (!state.map) {
                     state.targetLat = latitude; state.targetLon = longitude;
-                    state.displayLat = latitude; state.displayLon = longitude;
+                    state.displayLat = latitude; longitude;
                     initializeMap(latitude, longitude);
                     animationFrameId = requestAnimationFrame(animationLoop);
                 }
@@ -217,7 +261,6 @@
                     if (nextCurve.type !== 'straight' && nextCurve.distance <= CURVE_ALERT_DISTANCE) {
                         state.isCurveAlertActive = true;
                         const curveLatLngs = nextCurve.points.map(p => [p.lat, p.lon]);
-                        // El color amarillo (#facc15) debería seguir destacando bien en el mapa Toner Lite
                         L.polyline(curveLatLngs, { color: '#facc15', weight: 16, lineCap: 'round', lineJoin: 'round' }).addTo(state.curveHighlightLayer);
                     }
                     state.curveType = nextCurve.type; state.distanceToCurve = nextCurve.distance; state.curveDirection = nextCurve.direction;

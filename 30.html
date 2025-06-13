@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Avisador">
+    
+    <title>Avisador de Curvas Inteligente</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; overflow: hidden; height: 100vh; }
+        #main-container { display: flex; flex-direction: column; width: 100%; height: 100%; }
+        #map { height: 50%; width: 100%; background-color: #f0f0f0; transition: height 0.3s ease-in-out; position: relative; cursor: grab; }
+        #map:active { cursor: grabbing; }
+        #dashboard { height: 50%; width: 100%; position: relative; transition: height 0.3s ease-in-out; }
+        #app-screen { transition: background-color 0.5s ease-in-out; display: flex; flex-direction: column; height: 100%; }
+        .status-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        
+        .map-hidden #map { height: 0%; }
+        .map-hidden #dashboard { height: 100%; }
+        #hide-map-btn, #recenter-map-btn { z-index: 1001; }
+
+        #map .leaflet-map-pane { transition: transform 0.2s linear; }
+        .vehicle-marker-icon .vehicle-svg { transition: transform 0.2s linear; }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div id="main-container">
+        <div id="map">
+            <button id="hide-map-btn" class="absolute top-2 right-2 bg-white/70 backdrop-blur-sm text-gray-800 w-9 h-9 rounded-full flex items-center justify-center font-bold text-lg shadow-lg">X</button>
+            <button id="recenter-map-btn" class="absolute bottom-2 right-2 bg-white/80 backdrop-blur-sm text-blue-600 w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg shadow-lg hidden">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+            </button>
+        </div>
+        <div id="dashboard">
+            <div id="app-screen" class="w-full h-full text-white p-4 bg-gray-700">
+                <div class="w-full flex justify-start items-center absolute top-0 left-0 z-20 pl-4 pr-3 py-3"><div class="p-2 rounded-2xl flex justify-start items-center gap-2"><button id="mode-normal" data-mode="normal" class="mode-button px-4 py-2 rounded-full text-base font-bold shadow-lg transition-all duration-300 ease-in-out flex items-center justify-center bg-blue-600 text-white">Normal</button><button id="mode-sport" data-mode="sport" class="mode-button px-4 py-2 rounded-full text-base font-bold shadow-lg transition-all duration-300 ease-in-out flex items-center justify-center bg-red-600 text-white">Sport</button></div></div>
+                <div id="show-map-btn-container" class="absolute top-2 right-2 z-50 hidden"><button id="show-map-btn" class="ml-4 px-4 py-2 rounded-full text-base font-bold shadow-lg bg-gray-600 text-white">MAPA</button></div>
+                <div id="dashboard-content-wrapper" class="z-10"><div id="main-widgets-container" class="w-full flex items-center justify-around md:gap-8 px-4"><div class="flex flex-col items-center text-center"><svg id="signal-svg" viewBox="0 0 100 100" class="w-16 h-16 md:w-20 md:h-20"><circle cx="50" cy="50" r="45" stroke="#ef4444" stroke-width="6" fill="#f8fafc" /><text id="recommended-speed-icon-text" x="50" y="58" text-anchor="middle" font-size="30" font-weight="bold" fill="#0f172a">--</text></svg></div><div class="flex flex-col items-center justify-center"><svg id="curve-svg" viewBox="0 0 100 100" class="w-48 h-48 md:w-64 md:h-64"><path id="road-curve" d="M 50 95 L 50 5" stroke="white" stroke-width="10" fill="none" stroke-linecap="round" style="transition: d 0.5s ease-in-out;"></path></svg><p id="curve-type-text" class="text-lg font-bold">Recta</p></div><div class="speed-distance-container"><p id="alert-text" class="text-sm md:text-base font-black tracking-wider uppercase mb-1">INICIANDO</p><p id="speed-text" class="text-5xl md:text-7xl font-bold">0</p><p class="text-lg md:text-xl font-bold -mt-1 md:-mt-2 speed-unit">km/h</p><p id="distance-to-curve-text" class="text-xs md:text-base opacity-80 mt-1 md:mt-2">Distancia: -- m</p></div></div><div id="status-bar-container"><div class="w-full h-8 flex items-center justify-center"><div id="location-status" class="text-center text-sm opacity-80 status-pulse">Buscando señal de GPS...</div></div></div></div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <script>
+        const OVERPASS_API_URL = "https://overpass-api.de/api/interpreter";
+        const ANALYSIS_RADIUS_METERS = 150; const ANALYSIS_INTERVAL_MS = 8000; const MIN_MOVEMENT_FOR_ANALYSIS = 20; const MIN_GPS_ACCURACY_FOR_ANALYSIS = 35; const CURVE_ALERT_DISTANCE = 250; 
+        const ALERT_THRESHOLDS = { normal: { warning: 1.05, danger: 1.15 }, sport: { warning: 1.10, danger: 1.25 } };
+        const DEFAULT_SPEEDS_BY_HIGHWAY_TYPE = { motorway: 120, trunk: 100, primary: 90, secondary: 80, tertiary: 70, motorway_link: 80, trunk_link: 60, primary_link: 60, secondary_link: 50, residential: 40, unclassified: 50, 'default': 50 };
+
+        const mainContainer = document.getElementById('main-container'), appScreen = document.getElementById('app-screen'), speedText = document.getElementById('speed-text'), alertText = document.getElementById('alert-text'), roadCurve = document.getElementById('road-curve'), curveTypeText = document.getElementById('curve-type-text'), recommendedSpeedIconText = document.getElementById('recommended-speed-icon-text'), distanceToCurveText = document.getElementById('distance-to-curve-text'), locationStatus = document.getElementById('location-status'), modeNormalBtn = document.getElementById('mode-normal'), modeSportBtn = document.getElementById('mode-sport'), modeButtons = document.querySelectorAll('.mode-button'), hideMapBtn = document.getElementById('hide-map-btn'), showMapBtnContainer = document.getElementById('show-map-btn-container'), showMapBtn = document.getElementById('show-map-btn'), 
+        recenterMapBtn = document.getElementById('recenter-map-btn');
+
+        let state = {
+            rawLat: null, rawLon: null,
+            snappedLat: null, snappedLon: null,
+            displayLat: null, displayLon: null,
+            displayHeading: 0, currentHeading: 0, roadSegmentHeading: null, gpsHeading: 0,
+            currentSpeed: 0.0, currentAccuracy: null,
+            drivingMode: 'normal', currentAlertLevel: 'initializing',
+            map: null, isMapManuallyControlled: false,
+            isCurveAlertActive: false, isAnalyzing: false, lastAnalysisLat: null, lastAnalysisLon: null,
+            recommendedSpeed: null, curveType: 'straight', distanceToCurve: null, curveDirection: 'none',
+            currentRoadPolyline: null, vehicleMarker: null
+        };
+        let animationFrameId = null;
+
+        function updateUI() { const speed = state.recommendedSpeed ?? DEFAULT_SPEEDS_BY_HIGHWAY_TYPE['default']; let newAlertLevel = 'safe', alertTextContent = 'RECTA', backgroundColor = '#3b82f6'; if (state.currentAlertLevel === 'initializing') { alertTextContent = 'INICIANDO GPS'; backgroundColor = '#6b7280'; } else if (state.isCurveAlertActive) { const thresholds = ALERT_THRESHOLDS[state.drivingMode]; if (state.currentSpeed > speed * thresholds.danger) { newAlertLevel = 'danger'; backgroundColor = '#ef4444'; alertTextContent = `PELIGRO!`; } else if (state.currentSpeed > speed * thresholds.warning) { newAlertLevel = 'warning'; backgroundColor = '#f97316'; alertTextContent = `ATENCIÓN`; } else { newAlertLevel = 'safe'; backgroundColor = '#22c55e'; alertTextContent = 'VELOCIDAD SEGURA'; } } else { newAlertLevel = 'safe'; backgroundColor = '#3b82f6'; } if (newAlertLevel !== state.currentAlertLevel) { if (state.isCurveAlertActive) { switch (newAlertLevel) { case 'warning': break; case 'danger': break; } } } state.currentAlertLevel = newAlertLevel; appScreen.style.backgroundColor = backgroundColor; alertText.textContent = alertTextContent; speedText.textContent = Math.round(state.currentSpeed); recommendedSpeedIconText.textContent = state.recommendedSpeed ? Math.round(state.recommendedSpeed) : '--'; distanceToCurveText.textContent = state.distanceToCurve !== null ? `Distancia: ${Math.round(state.distanceToCurve)} m` : `Distancia: -- m`; }
+
+        function initializeMap(lat, lon) {
+            if (state.map) return;
+            state.map = L.map('map', { zoomControl: false, attributionControl: true, zoomAnimation: false, fadeAnimation: true, markerZoomAnimation: false }).setView([lat, lon], 18);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 20 }).addTo(state.map);
+            
+            const vehicleIconHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 vehicle-svg" viewBox="0 0 24 24"><defs><filter id="shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000000" flood-opacity="0.3"/></filter></defs><path fill="#2563eb" d="M12 2L2.5 21.5L12 17L21.5 21.5L12 2Z" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round" filter="url(#shadow)"/></svg>`;
+            const vehicleIcon = L.divIcon({ html: vehicleIconHTML, className: 'vehicle-marker-icon', iconSize: [48, 48], iconAnchor: [24, 40] });
+            state.vehicleMarker = L.marker([lat, lon], { icon: vehicleIcon, pane: 'markerPane' }).addTo(state.map);
+            
+            state.map.on('dragstart', () => {
+                state.isMapManuallyControlled = true;
+                recenterMapBtn.classList.remove('hidden');
+            });
+        }
+        
+        function renderMapState() {
+            if (!state.map || state.displayLat === null) return;
+
+            const targetLat = state.snappedLat ?? state.rawLat;
+            const targetLon = state.snappedLon ?? state.rawLon;
+            state.currentHeading = state.roadSegmentHeading ?? state.gpsHeading;
+
+            if (state.vehicleMarker && targetLat) {
+                state.vehicleMarker.setLatLng([targetLat, targetLon]);
+            }
+            
+            const markerElement = state.vehicleMarker.getElement()?.querySelector('.vehicle-svg');
+            const mapPane = state.map.getPane('mapPane');
+
+            if (state.isMapManuallyControlled) {
+                mapPane.style.transform = '';
+                if (markerElement) markerElement.style.transform = `rotate(${state.currentHeading}deg)`;
+            } else {
+                if (markerElement) markerElement.style.transform = 'rotate(0deg)';
+                
+                if (state.displayLat !== null) {
+                    const vehiclePositionLatLng = L.latLng(state.displayLat, state.displayLon);
+                    let targetPoint = state.map.project(vehiclePositionLatLng, state.map.getZoom());
+                    let offset = state.map.getSize().y / 2 - 40;
+                    let newCenterPoint = targetPoint.subtract([0, offset]);
+                    let newCenterLatLng = state.map.unproject(newCenterPoint, state.map.getZoom());
+                    state.map.setView(newCenterLatLng, state.map.getZoom(), { animate: false, noMoveStart: true });
+                    mapPane.style.transform = `rotate(${-state.displayHeading}deg)`;
+                }
+            }
+        }
+        
+        function animationLoop() {
+            animationFrameId = requestAnimationFrame(animationLoop);
+
+            const targetLat = state.snappedLat ?? state.rawLat;
+            const targetLon = state.snappedLon ?? state.rawLon;
+            state.currentHeading = state.roadSegmentHeading ?? state.gpsHeading;
+
+            if (targetLat !== null) {
+                if (state.displayLat === null) {
+                    state.displayLat = targetLat;
+                    state.displayLon = targetLon;
+                    state.displayHeading = state.currentHeading;
+                } else {
+                    state.displayLat = lerp(state.displayLat, targetLat, 0.2);
+                    state.displayLon = lerp(state.displayLon, targetLon, 0.2);
+                    let a = state.displayHeading, b = state.currentHeading;
+                    let diff = b - a; if (diff > 180) a += 360; else if (diff < -180) b += 360;
+                    state.displayHeading = lerp(a, b, 0.2) % 360;
+                }
+            }
+            
+            if (!state.isMapManuallyControlled) {
+                renderMapState();
+            }
+        }
+        
+        function startAnimationLoop() { if (animationFrameId === null) animationLoop(); }
+        
+        function startGeolocation() {
+            if (!('geolocation' in navigator)) { locationStatus.textContent = "Geolocalización no soportada."; return; }
+            navigator.geolocation.watchPosition((position) => {
+                const { latitude, longitude, speed, accuracy, heading } = position.coords;
+                
+                state.rawLat = latitude; state.rawLon = longitude;
+                state.currentSpeed = speed !== null ? speed * 3.6 : 0;
+                state.currentAccuracy = accuracy;
+                state.gpsHeading = heading ?? (state.locationHistory ? calculateUserHeading() : 0);
+
+                if (state.displayLat === null) {
+                    initializeMap(latitude, longitude);
+                    startAnimationLoop();
+                    locationStatus.classList.remove('status-pulse');
+                }
+
+                if (state.isMapManuallyControlled && state.vehicleMarker) {
+                    const newPos = state.snappedLat ? [state.snappedLat, state.snappedLon] : [state.rawLat, state.rawLon];
+                    state.vehicleMarker.setLatLng(newPos);
+                    const markerElement = state.vehicleMarker.getElement()?.querySelector('.vehicle-svg');
+                    if (markerElement) markerElement.style.transform = `rotate(${state.roadSegmentHeading ?? state.gpsHeading}deg)`;
+                }
+
+                if (accuracy > MIN_GPS_ACCURACY_FOR_ANALYSIS) { locationStatus.textContent = `Señal GPS débil (${Math.round(accuracy)}m)`; } 
+                else if (!state.isAnalyzing) { locationStatus.textContent = "GPS Activo"; }
+                updateUI();
+            }, (error) => { locationStatus.textContent = `Error de GPS: ${error.message}`; }, { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 });
+        }
+        
+        async function analysisLoop() {
+            if (state.isAnalyzing || !state.rawLat) return;
+            if (state.currentAccuracy > MIN_GPS_ACCURACY_FOR_ANALYSIS) return;
+            const movedDistance = state.lastAnalysisLat ? getDistance(state.rawLat, state.rawLon, state.lastAnalysisLat, state.lastAnalysisLon) : MIN_MOVEMENT_FOR_ANALYSIS + 1;
+            if (movedDistance < MIN_MOVEMENT_FOR_ANALYSIS) return;
+
+            state.isAnalyzing = true;
+            try {
+                const query = `[out:json];(way["highway"~"^(primary|secondary|tertiary|trunk|motorway|unclassified|residential)(_link)?$"](around:${ANALYSIS_RADIUS_METERS},${state.rawLat},${state.rawLon}););out geom tags;`;
+                const response = await fetch(OVERPASS_API_URL, { method: 'POST', body: "data=" + encodeURIComponent(query) });
+                if (!response.ok) throw new Error(`OSM ${response.status}`);
+                const data = await response.json(); const userPos = { lat: state.rawLat, lon: state.rawLon };
+                const bestRoad = findBestRoad(data.elements, userPos, state.gpsHeading);
+                
+                if (state.currentRoadPolyline) { state.currentRoadPolyline.remove(); }
+                state.snappedLat = null; state.snappedLon = null; state.roadSegmentHeading = null;
+
+                if (bestRoad) {
+                    const latLngs = bestRoad.geometry.map(p => [p.lat, p.lon]);
+                    state.currentRoadPolyline = L.polyline(latLngs, { color: '#6ee7b7', weight: 7, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }).addTo(state.map);
+                    
+                    const snappedResult = findClosestPointOnPolyline(bestRoad.geometry, userPos);
+                    if (snappedResult) {
+                        state.snappedLat = snappedResult.point.lat;
+                        state.snappedLon = snappedResult.point.lon;
+                        state.roadSegmentHeading = getAngleBetweenPoints(snappedResult.segment[0], snappedResult.segment[1]);
+                    }
+                }
+                state.lastAnalysisLat = state.rawLat; state.lastAnalysisLon = state.rawLon;
+            } catch (error) { locationStatus.textContent = `Error de red: ${error.message}`; } finally { state.isAnalyzing = false; }
+        }
+        
+        function findBestRoad(elements, userPos, userHeading) { let candidates = []; elements.forEach(road => { if (road.type !== 'way' || !road.geometry || road.geometry.length < 2) return; let minDistance = Infinity, closestPointIndex = -1; for (let i = 0; i < road.geometry.length; i++) { const dist = getDistance(userPos.lat, userPos.lon, road.geometry[i].lat, road.geometry[i].lon); if (dist < minDistance) { minDistance = dist; closestPointIndex = i; } } if (minDistance > 60) return; let segmentHeading = null; if (closestPointIndex < road.geometry.length - 1) { segmentHeading = getAngleBetweenPoints(road.geometry[closestPointIndex], road.geometry[closestPointIndex + 1]); } else if (closestPointIndex > 0) { segmentHeading = getAngleBetweenPoints(road.geometry[closestPointIndex - 1], road.geometry[closestPointIndex]); } if (segmentHeading === null) return; const headingDiff = Math.abs(userHeading - segmentHeading); const effectiveHeadingDiff = Math.min(headingDiff, 360 - headingDiff); if (effectiveHeadingDiff < 75) { candidates.push({ road: road, distance: minDistance }); } }); if (candidates.length === 0) return null; candidates.sort((a, b) => a.distance - b.distance); return candidates[0].road; }
+        function findClosestPointOnPolyline(polyline, point) { let closest = null, minDistanceSq = Infinity; for (let i = 0; i < polyline.length - 1; i++) { const p1 = polyline[i], p2 = polyline[i+1]; const l2 = (p2.lat - p1.lat)**2 + (p2.lon - p1.lon)**2; if (l2 === 0) continue; let t = ((point.lat - p1.lat) * (p2.lat - p1.lat) + (point.lon - p1.lon) * (p2.lon - p1.lon)) / l2; t = Math.max(0, Math.min(1, t)); const projection = { lat: p1.lat + t * (p2.lat - p1.lat), lon: p1.lon + t * (p2.lon - p1.lon) }; const distSq = (point.lat - projection.lat)**2 + (point.lon - projection.lon)**2; if (distSq < minDistanceSq) { minDistanceSq = distSq; closest = { point: projection, segment: [p1, p2] }; } } return closest; }
+        function getAngleBetweenPoints(p1,p2){let a=Math.atan2(p2.lon-p1.lon,p2.lat-p1.lat)*180/Math.PI;return a<0?a+360:a}
+        function lerp(start, end, amt) { return (1 - amt) * start + amt * end; }
+        
+        recenterMapBtn.addEventListener('click', () => {
+            state.isMapManuallyControlled = false;
+            recenterMapBtn.classList.add('hidden');
+            renderMapState(); // Forzar un re-renderizado inmediato al modo navegación
+        });
+
+        startGeolocation();
+        setInterval(analysisLoop, ANALYSIS_INTERVAL_MS);
+    </script>
+</body>
+</html>

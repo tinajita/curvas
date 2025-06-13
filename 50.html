@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Avisador">
+    
+    <title>Avisador de Curvas Inteligente - Solución Definitiva</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; overflow: hidden; height: 100vh; touch-action: none; }
+        #main-container { display: flex; flex-direction: column; width: 100%; height: 100%; }
+        #map { height: 50%; width: 100%; background-color: #f0f0f0; transition: height 0.3s ease-in-out; position: relative; cursor: grab; }
+        #map:active { cursor: grabbing; }
+        #dashboard { height: 50%; width: 100%; position: relative; transition: height 0.3s ease-in-out; }
+        #app-screen { transition: background-color 0.5s ease-in-out; display: flex; flex-direction: column; height: 100%; }
+        .status-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        
+        .map-hidden #map { height: 0%; }
+        .map-hidden #dashboard { height: 100%; }
+        #hide-map-btn, #recenter-map-btn { z-index: 1001; }
+
+        #map .leaflet-map-pane { transition: transform 0.2s linear; }
+        .vehicle-marker-icon .vehicle-svg { transition: transform 0.2s linear; }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div id="main-container">
+        <div id="map">
+            <button id="hide-map-btn" class="absolute top-2 right-2 bg-white/70 backdrop-blur-sm text-gray-800 w-9 h-9 rounded-full flex items-center justify-center font-bold text-lg shadow-lg">X</button>
+            <button id="recenter-map-btn" class="absolute bottom-2 right-2 bg-white/80 backdrop-blur-sm text-blue-600 w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg shadow-lg hidden">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+            </button>
+        </div>
+        <div id="dashboard">
+            <div id="app-screen" class="w-full h-full text-white p-4 bg-gray-700">
+                <div class="w-full flex justify-start items-center absolute top-0 left-0 z-20 pl-4 pr-3 py-3"><div class="p-2 rounded-2xl flex justify-start items-center gap-2"><button id="mode-normal" data-mode="normal" class="mode-button px-4 py-2 rounded-full text-base font-bold shadow-lg transition-all duration-300 ease-in-out flex items-center justify-center bg-blue-600 text-white">Normal</button><button id="mode-sport" data-mode="sport" class="mode-button px-4 py-2 rounded-full text-base font-bold shadow-lg transition-all duration-300 ease-in-out flex items-center justify-center bg-red-600 text-white">Sport</button></div></div>
+                <div id="show-map-btn-container" class="absolute top-2 right-2 z-50 hidden"><button id="show-map-btn" class="ml-4 px-4 py-2 rounded-full text-base font-bold shadow-lg bg-gray-600 text-white">MAPA</button></div>
+                <div id="dashboard-content-wrapper" class="z-10">
+                    <!-- Contenido del dashboard (sin cambios) -->
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <script>
+        // --- ELEMENTOS DEL DOM ---
+        const mainContainer = document.getElementById('main-container'),
+            recenterMapBtn = document.getElementById('recenter-map-btn'),
+            locationStatus = document.getElementById('location-status'),
+            speedText = document.getElementById('speed-text');
+
+        // --- ESTADO GLOBAL ---
+        let state = {
+            map: null, vehicleMarker: null,
+            isMapManuallyControlled: false,
+            rawLat: null, rawLon: null,
+            gpsHeading: 0,
+            displayHeading: 0, // Rotación visual suavizada
+            locationHistory: [],
+        };
+        let animationFrameId = null;
+        let autoCenterInterval = null;
+
+        // --- LÓGICA DEL MAPA ---
+        function initializeMap(lat, lon) {
+            if (state.map) return;
+            state.map = L.map('map', { zoomControl: false, attributionControl: false, zoomAnimation: true }).setView([lat, lon], 18);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 20 }).addTo(state.map);
+            
+            const vehicleIconHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 vehicle-svg" viewBox="0 0 24 24"><defs><filter id="shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000000" flood-opacity="0.3"/></filter></defs><path fill="#2563eb" d="M12 2L2.5 21.5L12 17L21.5 21.5L12 2Z" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round" filter="url(#shadow)"/></svg>`;
+            const vehicleIcon = L.divIcon({ html: vehicleIconHTML, className: 'vehicle-marker-icon', iconSize: [48, 48], iconAnchor: [24, 40] });
+            state.vehicleMarker = L.marker([lat, lon], { icon: vehicleIcon, zIndexOffset: 1000 }).addTo(state.map);
+            
+            const setManualMode = () => {
+                if (!state.isMapManuallyControlled) {
+                    state.isMapManuallyControlled = true;
+                    recenterMapBtn.classList.remove('hidden');
+                }
+            };
+            state.map.on('dragstart', setManualMode);
+            state.map.on('zoomstart', setManualMode);
+    
+            animationFrameId = requestAnimationFrame(animationLoop);
+            // Iniciar el temporizador de centrado automático
+            if(autoCenterInterval) clearInterval(autoCenterInterval);
+            autoCenterInterval = setInterval(autoCenterMap, 1000);
+        }
+
+        // Se ejecuta una vez por segundo para centrar el mapa si es necesario
+        function autoCenterMap() {
+            // No hacer nada si el usuario tiene el control o no hay datos
+            if (state.isMapManuallyControlled || !state.map || state.rawLat === null) return;
+            
+            const offset = state.map.getSize().y * -0.3;
+            const centerWithOffset = state.map.project([state.rawLat, state.rawLon]).add([0, offset]);
+            const newCenterLatLng = state.map.unproject(centerWithOffset);
+            
+            state.map.panTo(newCenterLatLng, { animate: true, duration: 1.0, noMoveStart: true });
+        }
+        
+        // RESPONSABILIDAD ÚNICA: Mover marcador y rotar
+        function animationLoop() {
+            if (state.map && state.vehicleMarker && state.rawLat !== null) {
+                // Mover el marcador a su posición
+                state.vehicleMarker.setLatLng([state.rawLat, state.rawLon]);
+
+                // Suavizar la rotación
+                let a = state.displayHeading, b = state.gpsHeading;
+                let diff = b - a; if (diff > 180) a += 360; else if (diff < -180) b += 360;
+                state.displayHeading = lerp(a, b, 0.2);
+
+                const markerElement = state.vehicleMarker.getElement()?.querySelector('.vehicle-svg');
+                const mapPane = state.map.getPane('mapPane');
+
+                if (state.isMapManuallyControlled) {
+                    // MODO MANUAL: Mapa quieto, flecha rota
+                    mapPane.style.transform = '';
+                    if (markerElement) markerElement.style.transform = `rotate(${state.displayHeading}deg)`;
+                } else {
+                    // MODO AUTOMÁTICO: Mapa rota, flecha quieta
+                    mapPane.style.transform = `rotate(${-state.displayHeading}deg)`;
+                    if (markerElement) markerElement.style.transform = 'rotate(0deg)';
+                }
+            }
+            animationFrameId = requestAnimationFrame(animationLoop);
+        }
+        
+        // --- GEOLOCALIZACIÓN ---
+        function startGeolocation() {
+            if (!('geolocation' in navigator)) {
+                locationStatus.textContent = "Geolocalización no soportada";
+                return;
+            }
+            navigator.geolocation.watchPosition(
+                (position) => {
+                    const { latitude, longitude, speed, accuracy, heading } = position.coords;
+                    
+                    state.rawLat = latitude;
+                    state.rawLon = longitude;
+                    state.gpsHeading = (heading !== null && heading >= 0) ? heading : calculateUserHeading();
+                    
+                    state.locationHistory.push({ lat: latitude, lon: longitude });
+                    if (state.locationHistory.length > 20) state.locationHistory.shift();
+                    
+                    if (state.map === null) {
+                        initializeMap(latitude, longitude);
+                    }
+                    
+                    locationStatus.textContent = `GPS Activo (${Math.round(accuracy)}m)`;
+                    speedText.textContent = Math.round(speed !== null ? speed * 3.6 : 0);
+                },
+                (error) => { locationStatus.textContent = `Error de GPS: ${error.message}`; },
+                { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+            );
+        }
+    
+        // --- MANEJADORES DE EVENTOS DE LA UI ---
+        recenterMapBtn.addEventListener('click', () => {
+            if (!state.map) return;
+
+            state.isMapManuallyControlled = false;
+            recenterMapBtn.classList.add('hidden');
+
+            // SOLUCIÓN AL VUELCO: Forzar reseteo de la rotación visual
+            state.displayHeading = state.gpsHeading;
+            
+            // Ejecutar un centrado inmediato para que el usuario vea el cambio
+            autoCenterMap();
+            
+            // SOLUCIÓN A LAS ZONAS GRISES: Forzar redibujado
+            state.map.invalidateSize(true);
+        });
+
+        document.getElementById('hide-map-btn').addEventListener('click', () => {
+            mainContainer.classList.add('map-hidden');
+        });
+
+        document.getElementById('show-map-btn').addEventListener('click', () => {
+            mainContainer.classList.remove('map-hidden');
+            if (state.map) {
+                setTimeout(() => state.map.invalidateSize(true), 350);
+            }
+        });
+
+        // --- FUNCIONES AUXILIARES ---
+        function lerp(start, end, amt) { return (1 - amt) * start + amt * end; }
+        function calculateUserHeading(){
+            if(!state.locationHistory || state.locationHistory.length < 5) return state.gpsHeading || 0;
+            const p1 = state.locationHistory[0];
+            const p2 = state.locationHistory[state.locationHistory.length - 1];
+            let angle = Math.atan2(p2.lon - p1.lon, p2.lat - p1.lat) * 180 / Math.PI;
+            return angle < 0 ? angle + 360 : angle;
+        }
+
+        // --- INICIALIZACIÓN ---
+        startGeolocation();
+
+    </script>
+</body>
+</html>

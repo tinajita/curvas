@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Avisador">
+    
+    <title>Avisador de Curvas - Modo Estable</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; overflow: hidden; height: 100vh; touch-action: none; }
+        #main-container { display: flex; flex-direction: column; width: 100%; height: 100%; }
+        #map { height: 50%; width: 100%; background-color: #f0f0f0; transition: height 0.3s ease-in-out; position: relative; }
+        /* Se elimina el cursor de 'grab' ya que no se puede arrastrar */
+        #dashboard { height: 50%; width: 100%; position: relative; transition: height 0.3s ease-in-out; }
+        #app-screen { transition: background-color 0.5s ease-in-out; display: flex; flex-direction: column; height: 100%; }
+        .status-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        
+        .map-hidden #map { height: 0%; }
+        .map-hidden #dashboard { height: 100%; }
+        #hide-map-btn { z-index: 1001; }
+
+        #map .leaflet-map-pane { transition: transform 0.2s linear; }
+        .vehicle-marker-icon .vehicle-svg { transition: transform 0.2s linear; }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div id="main-container">
+        <div id="map">
+             <!-- Se elimina el botón de recentrar, ya no es necesario -->
+            <button id="hide-map-btn" class="absolute top-2 right-2 bg-white/70 backdrop-blur-sm text-gray-800 w-9 h-9 rounded-full flex items-center justify-center font-bold text-lg shadow-lg">X</button>
+        </div>
+        <div id="dashboard">
+            <div id="app-screen" class="w-full h-full text-white p-4 bg-gray-700">
+                <div class="w-full flex justify-start items-center absolute top-0 left-0 z-20 pl-4 pr-3 py-3"><div class="p-2 rounded-2xl flex justify-start items-center gap-2"><button id="mode-normal" data-mode="normal" class="mode-button px-4 py-2 rounded-full text-base font-bold shadow-lg transition-all duration-300 ease-in-out flex items-center justify-center bg-blue-600 text-white">Normal</button><button id="mode-sport" data-mode="sport" class="mode-button px-4 py-2 rounded-full text-base font-bold shadow-lg transition-all duration-300 ease-in-out flex items-center justify-center bg-red-600 text-white">Sport</button></div></div>
+                <div id="show-map-btn-container" class="absolute top-2 right-2 z-50 hidden"><button id="show-map-btn" class="ml-4 px-4 py-2 rounded-full text-base font-bold shadow-lg bg-gray-600 text-white">MAPA</button></div>
+                <div id="dashboard-content-wrapper" class="z-10">
+                    <!-- Contenido del dashboard (sin cambios) -->
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <script>
+        // --- CONSTANTES Y ELEMENTOS DEL DOM ---
+        const OVERPASS_API_URL = "https://overpass-api.de/api/interpreter";
+        const ANALYSIS_RADIUS_METERS = 150, ANALYSIS_INTERVAL_MS = 5000, MIN_GPS_ACCURACY_FOR_ANALYSIS = 35;
+        
+        const mainContainer = document.getElementById('main-container'),
+            locationStatus = document.getElementById('location-status'),
+            speedText = document.getElementById('speed-text');
+
+        // --- ESTADO GLOBAL ---
+        let state = {
+            map: null, vehicleMarker: null, currentRoadPolyline: null,
+            rawLat: null, rawLon: null,
+            snappedLat: null, snappedLon: null, // Coordenadas sobre la carretera
+            displayHeading: 0, roadSegmentHeading: null, gpsHeading: 0,
+            currentSpeed: 0.0, locationHistory: [],
+            isAnalyzing: false, lastAnalysisTime: 0,
+            currentAccuracy: null,
+        };
+        let animationFrameId = null;
+
+        // --- LÓGICA DEL MAPA ---
+        function initializeMap(lat, lon) {
+            if (state.map) return;
+            // Se deshabilita el arrastre del mapa, pero se mantiene el zoom
+            state.map = L.map('map', { 
+                zoomControl: false, 
+                attributionControl: false, 
+                dragging: false, // ¡CLAVE! Deshabilita el arrastre con un dedo
+                touchZoom: true,   // Permite el zoom con dos dedos
+                scrollWheelZoom: true // Permite el zoom con la rueda del ratón
+            }).setView([lat, lon], 18);
+
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 20 }).addTo(state.map);
+            
+            const vehicleIconHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 vehicle-svg" viewBox="0 0 24 24"><defs><filter id="shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000000" flood-opacity="0.3"/></filter></defs><path fill="#2563eb" d="M12 2L2.5 21.5L12 17L21.5 21.5L12 2Z" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round" filter="url(#shadow)"/></svg>`;
+            const vehicleIcon = L.divIcon({ html: vehicleIconHTML, className: 'vehicle-marker-icon', iconSize: [48, 48], iconAnchor: [24, 40] });
+            state.vehicleMarker = L.marker([lat, lon], { icon: vehicleIcon, zIndexOffset: 1000 }).addTo(state.map);
+    
+            animationFrameId = requestAnimationFrame(animationLoop);
+        }
+        
+        // Bucle de animación: El único responsable de la vista.
+        function animationLoop() {
+            if (!state.map || !state.vehicleMarker || state.rawLat === null) {
+                animationFrameId = requestAnimationFrame(animationLoop);
+                return;
+            }
+
+            // Usar la posición "snapped" (en la carretera) si existe, si no, la del GPS.
+            const currentPos = [state.snappedLat ?? state.rawLat, state.snappedLon ?? state.rawLon];
+            state.vehicleMarker.setLatLng(currentPos);
+
+            // Usar la orientación de la carretera si existe, si no, la del GPS.
+            const targetHeading = state.roadSegmentHeading ?? state.gpsHeading;
+            let a = state.displayHeading, b = targetHeading;
+            let diff = b - a; if (diff > 180) a += 360; else if (diff < -180) b += 360;
+            state.displayHeading = lerp(a, b, 0.2);
+
+            const markerElement = state.vehicleMarker.getElement()?.querySelector('.vehicle-svg');
+            const mapPane = state.map.getPane('mapPane');
+
+            // --- LÓGICA DE CENTRADO Y ROTACIÓN (SIEMPRE ACTIVA) ---
+            const offset = state.map.getSize().y * -0.3;
+            const centerWithOffset = state.map.project(currentPos).add([0, offset]);
+            const newCenterLatLng = state.map.unproject(centerWithOffset);
+            
+            state.map.setView(newCenterLatLng, state.map.getZoom(), { animate: false, noMoveStart: true });
+            
+            mapPane.style.transform = `rotate(${-state.displayHeading}deg)`;
+            if (markerElement) markerElement.style.transform = 'rotate(0deg)';
+            
+            animationFrameId = requestAnimationFrame(animationLoop);
+        }
+        
+        // --- GEOLOCALIZACIÓN Y ANÁLISIS ---
+        function startGeolocation() {
+            if (!('geolocation' in navigator)) {
+                locationStatus.textContent = "Geolocalización no soportada";
+                return;
+            }
+            navigator.geolocation.watchPosition(
+                (position) => {
+                    const { latitude, longitude, speed, accuracy, heading } = position.coords;
+                    
+                    state.rawLat = latitude; state.rawLon = longitude;
+                    state.currentSpeed = speed !== null ? speed * 3.6 : 0;
+                    state.currentAccuracy = accuracy;
+                    state.gpsHeading = (heading !== null && heading >= 0) ? heading : calculateUserHeading();
+                    
+                    state.locationHistory.push({ lat: latitude, lon: longitude });
+                    if (state.locationHistory.length > 20) state.locationHistory.shift();
+                    
+                    if (state.map === null) {
+                        initializeMap(latitude, longitude);
+                    }
+
+                    if (accuracy > MIN_GPS_ACCURACY_FOR_ANALYSIS) { 
+                        locationStatus.textContent = `Señal GPS débil (${Math.round(accuracy)}m)`;
+                    } else if (!state.isAnalyzing) {
+                        locationStatus.textContent = "GPS Activo";
+                    }
+
+                    speedText.textContent = Math.round(state.currentSpeed);
+                },
+                (error) => { locationStatus.textContent = `Error de GPS: ${error.message}`; },
+                { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+            );
+        }
+
+        async function analysisLoop() {
+            const now = Date.now();
+            if (state.isAnalyzing || !state.rawLat || state.currentAccuracy > MIN_GPS_ACCURACY_FOR_ANALYSIS || (now - state.lastAnalysisTime < ANALYSIS_INTERVAL_MS)) {
+                return;
+            }
+            state.isAnalyzing = true;
+            state.lastAnalysisTime = now;
+
+            try {
+                const query = `[out:json];(way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)(_link)?$"](around:${ANALYSIS_RADIUS_METERS},${state.rawLat},${state.rawLon}););out geom;`;
+                const response = await fetch(OVERPASS_API_URL, { method: 'POST', body: "data=" + encodeURIComponent(query) });
+                if (!response.ok) throw new Error(`Error de servidor de mapas (${response.status})`);
+                const data = await response.json();
+                
+                if (state.currentRoadPolyline) state.currentRoadPolyline.remove();
+                
+                const userPos = { lat: state.rawLat, lon: state.rawLon };
+                const bestRoad = findBestRoad(data.elements, userPos, state.gpsHeading);
+                
+                if (bestRoad) {
+                    const snappedResult = findClosestPointOnPolyline(bestRoad.geometry, userPos);
+                    if (snappedResult) {
+                        state.snappedLat = snappedResult.point.lat;
+                        state.snappedLon = snappedResult.point.lon;
+                        state.roadSegmentHeading = getAngleBetweenPoints(snappedResult.segment[0], snappedResult.segment[1]);
+                    }
+                } else {
+                    // Si no encontramos carretera, reseteamos los valores "snapped"
+                    state.snappedLat = null;
+                    state.snappedLon = null;
+                    state.roadSegmentHeading = null;
+                }
+            } catch (error) {
+                console.error("Error en analysisLoop:", error);
+            } finally {
+                state.isAnalyzing = false;
+            }
+        }
+    
+        // --- MANEJADORES DE EVENTOS DE LA UI (Simplificados) ---
+        document.getElementById('hide-map-btn').addEventListener('click', () => {
+            mainContainer.classList.add('map-hidden');
+        });
+        document.getElementById('show-map-btn-container').addEventListener('click', () => {
+            mainContainer.classList.remove('map-hidden');
+            if (state.map) {
+                setTimeout(() => state.map.invalidateSize(true), 350);
+            }
+        });
+
+        // --- FUNCIONES AUXILIARES ---
+        function lerp(start, end, amt) { return (1 - amt) * start + amt * end; }
+        function getDistance(lat1,lon1,lat2,lon2){const R=6371e3;const f1=lat1*Math.PI/180,f2=lat2*Math.PI/180,df=(lat2-lat1)*Math.PI/180,dl=(lon2-lon1)*Math.PI/180;const a=Math.sin(df/2)*Math.sin(df/2)+Math.cos(f1)*Math.cos(f2)*Math.sin(dl/2)*Math.sin(dl/2);const c=2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));return R*c}
+        function calculateUserHeading(){if(state.locationHistory.length<5)return state.gpsHeading;const p1=state.locationHistory[0],p2=state.locationHistory[state.locationHistory.length-1];if(getDistance(p1.lat,p1.lon,p2.lat,p2.lon)<10)return state.gpsHeading;const dLon=p2.lon-p1.lon,dLat=p2.lat-p1.lat;const angle=Math.atan2(dLon,dLat)*180/Math.PI;return(angle+360)%360}
+        function findBestRoad(elements,userPos,userHeading){let bestMatch={road:null,score:Infinity};elements.forEach(road=>{if(road.type!=='way'||!road.geometry||road.geometry.length<2)return;const snapped=findClosestPointOnPolyline(road.geometry,userPos);if(!snapped)return;const distance=getDistance(userPos.lat,userPos.lon,snapped.point.lat,snapped.point.lon);if(distance>50)return;const heading=getAngleBetweenPoints(snapped.segment[0],snapped.segment[1]);const headingDiff=Math.min(Math.abs(userHeading-heading),360-Math.abs(userHeading-heading));if(headingDiff>90)return;const score=distance+headingDiff*0.1;if(score<bestMatch.score){bestMatch={road:road,score:score}}});return bestMatch.road}
+        function findClosestPointOnPolyline(polyline,point){let closest=null,minDistSq=Infinity;for(let i=0;i<polyline.length-1;i++){const p1=polyline[i],p2=polyline[i+1];const l2=(p2.lat-p1.lat)**2+(p2.lon-p1.lon)**2;if(l2===0)continue;let t=((point.lat-p1.lat)*(p2.lat-p1.lat)+(point.lon-p1.lon)*(p2.lon-p1.lon))/l2;t=Math.max(0,Math.min(1,t));const proj={lat:p1.lat+t*(p2.lat-p1.lat),lon:p1.lon+t*(p2.lon-p1.lon)};const distSq=(point.lat-proj.lat)**2+(point.lon-proj.lon)**2;if(distSq<minDistSq){minDistSq=distSq;closest={point:proj,segment:[p1,p2]}}}return closest}
+        function getAngleBetweenPoints(p1,p2){return(Math.atan2(p2.lon-p1.lon,p2.lat-p1.lat)*180/Math.PI+360)%360}
+
+        // --- INICIALIZACIÓN ---
+        startGeolocation();
+        setInterval(analysisLoop, 1000); // El análisis corre frecuentemente para mantener la posición en la carretera
+
+    </script>
+</body>
+</html>

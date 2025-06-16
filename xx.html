@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Navegador GPS Fijo</title>
+    
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v7.3.0/ol.css">
+    <script src="https://cdn.jsdelivr.net/npm/ol@v7.3.0/dist/ol.js"></script>
+    
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+            background: #e0e0e0;
+        }
+
+        /* ESTA ES LA CLAVE: El marcador de posición FIJO con CSS */
+        #position-marker {
+            position: fixed; /* Fijo en la pantalla, NO se mueve con el mapa */
+            left: 50%;       /* Centrado horizontalmente */
+            bottom: 20%;     /* Ubicado en la parte inferior (puedes ajustar este 20%) */
+            
+            /* Triángulo que simula la flecha de navegación */
+            width: 0;
+            height: 0;
+            border-left: 15px solid transparent;
+            border-right: 15px solid transparent;
+            border-top: 25px solid #007bff; /* Color azul brillante */
+            
+            /* Sombra para que destaque sobre el mapa */
+            filter: drop-shadow(0px 3px 5px rgba(0,0,0,0.5));
+
+            /* Corrección para que el centro real de la flecha sea el punto de anclaje */
+            transform: translateX(-50%);
+
+            /* Asegura que siempre esté por encima del mapa */
+            z-index: 1000;
+        }
+        
+        #info-overlay {
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.75);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 20px;
+            text-align: center;
+            z-index: 1001;
+            font-family: sans-serif;
+            font-size: 14px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        }
+
+        .ol-control { display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <!-- La flecha fija de navegación -->
+    <div id="position-marker"></div>
+
+    <!-- Un panel para dar información al usuario -->
+    <div id="info-overlay">Inicializando...</div>
+
+    <script>
+        // --- CONFIGURACIÓN DE LA RUTA ---
+        const startCoords = [-3.703790, 40.416775]; // Madrid: Puerta del Sol
+        const endCoords = [-3.693352, 40.419208];   // Madrid: Plaza de Cibeles
+
+        // --- REFERENCIAS Y ESTADO ---
+        const infoOverlay = document.getElementById('info-overlay');
+        let map, view;
+
+        /**
+         * Lógica principal que se ejecuta cuando la página está completamente cargada.
+         */
+        window.onload = async () => {
+            
+            // 1. INICIALIZAR EL MAPA
+            const routeSource = new ol.source.Vector();
+            
+            view = new ol.View({
+                center: ol.proj.fromLonLat(startCoords),
+                zoom: 18,
+                rotation: 0,
+            });
+
+            map = new ol.Map({
+                target: 'map',
+                layers: [
+                    new ol.layer.Tile({ source: new ol.source.OSM() }),
+                    new ol.layer.Vector({
+                        source: routeSource,
+                        style: new ol.style.Style({
+                            stroke: new ol.style.Stroke({
+                                color: 'rgba(255, 0, 0, 0.7)', // Rojo para la ruta
+                                width: 8,
+                            })
+                        })
+                    })
+                ],
+                view: view,
+                controls: [], // Sin controles de zoom, etc.
+                interactions: ol.interaction.defaults({
+                    dragPan: false, // El usuario no puede mover el mapa
+                    pinchZoom: false,
+                    mouseWheelZoom: false
+                })
+            });
+
+            infoOverlay.textContent = 'Calculando ruta...';
+
+            // 2. OBTENER Y DIBUJAR LA RUTA
+            try {
+                const url = `https://router.project-osrm.org/route/v1/driving/${startCoords[0]},${startCoords[1]};${endCoords[0]},${endCoords[1]}?geometries=geojson`;
+                const response = await fetch(url);
+                const json = await response.json();
+                
+                if (json.code !== 'Ok' || !json.routes.length) {
+                    throw new Error('No se encontró la ruta.');
+                }
+                
+                const routeFeature = new ol.format.GeoJSON().readFeature(json.routes[0].geometry, {
+                    dataProjection: 'EPSG:4326',
+                    featureProjection: 'EPSG:3857'
+                });
+                routeSource.addFeature(routeFeature);
+                console.log("Ruta dibujada en el mapa.");
+                infoOverlay.textContent = 'Ruta cargada. Buscando señal GPS...';
+            } catch (error) {
+                console.error('Error al obtener la ruta:', error);
+                infoOverlay.textContent = 'Error al cargar la ruta.';
+                return;
+            }
+
+            // 3. INICIAR NAVEGACIÓN GPS
+            if (!navigator.geolocation) {
+                infoOverlay.textContent = 'Geolocalización no soportada.';
+                return;
+            }
+
+            navigator.geolocation.watchPosition((position) => {
+                const { latitude, longitude, speed, heading } = position.coords;
+                const coords = [longitude, latitude];
+                
+                infoOverlay.textContent = `Velocidad: ${Math.round(speed * 3.6)} km/h`;
+                
+                // Mueve el centro del mapa a la posición del GPS.
+                // Como la flecha es un elemento CSS fijo, el mapa se moverá por debajo.
+                view.setCenter(ol.proj.fromLonLat(coords));
+
+                // Rota el mapa para que la parte de "arriba" apunte en la dirección del movimiento.
+                // El heading del GPS está en grados. OpenLayers usa radianes.
+                // Se usa negativo para que la rotación sea en el sentido correcto.
+                if (heading !== null) {
+                    const rotation = -heading * (Math.PI / 180);
+                    view.setRotation(rotation);
+                }
+
+            }, (error) => {
+                infoOverlay.textContent = `Error de GPS: ${error.message}`;
+            }, { enableHighAccuracy: true });
+        };
+
+    </script>
+</body>
+</html>

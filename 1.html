@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>GPS en vivo con OpenLayers</title>
+
+  <!-- OpenLayers -->
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/ol@v10.5.0/ol.css">
+  <script src="https://cdn.jsdelivr.net/npm/ol@v10.5.0/dist/ol.js"></script>
+
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    #map      { width: 100%; height: 100%; }
+
+    /* Flechita / vehículo */
+    .car {
+      width: 38px;
+      height: 38px;
+      background: url('https://cdn.jsdelivr.net/gh/openlayers/openlayers.github.io@master/en/v6.15.1/examples/data/icon.png')
+                  center/contain no-repeat;
+      transform: translate(-50%, -50%); /* centrar overlay */
+      z-index: 1000;                    /* por encima de todo */
+    }
+
+    /* Botoncito sencillo para conceder permisos manualmente si hace falta */
+    #status {
+      position: absolute;
+      top: .5rem; left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,.6);
+      color: #fff; padding: .4rem .8rem;
+      border-radius: 8px; font-size: .8rem;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="status">Solicitando GPS…</div>
+
+  <script>
+    /************** 1. Mapa base *********************/
+    const view = new ol.View({
+      center: ol.proj.fromLonLat([-3.70379, 40.41678]), // Madrid de arranque
+      zoom: 17,
+      rotation: 0
+    });
+
+    const map = new ol.Map({
+      target: 'map',
+      layers: [
+        new ol.layer.Tile({ source: new ol.source.OSM() })
+      ],
+      view
+    });
+
+    /************** 2. Flechita fija ******************/
+    const carEl = document.createElement('div');
+    carEl.className = 'car';
+
+    const carOverlay = new ol.Overlay({
+      element: carEl,
+      positioning: 'center-center',
+      stopEvent: false,
+      rotateWithView: true   // El icono no gira, el mapa sí
+    });
+    map.addOverlay(carOverlay);
+
+    /** Función auxiliar para centrar la flecha en (50 %, 75 %) */
+    function centerOnScreen(coord) {
+      const size = map.getSize();
+      view.centerOn(coord, size, [size[0] / 2, size[1] * 0.75]);
+    }
+
+    /************** 3. Seguimiento GPS ****************/
+    const statusEl = document.getElementById('status');
+
+    let lastCoord = null;      // Lon/Lat anteriores para calcular rumbo propio
+
+    if ('geolocation' in navigator) {
+      navigator.geolocation.watchPosition(
+        ({ coords }) => {
+          statusEl.textContent = '';
+          const { latitude, longitude, heading, speed } = coords;
+
+          // Convertir a proyección del mapa
+          const coord3857 = ol.proj.fromLonLat([longitude, latitude]);
+
+          // Colocar y centrar flecha
+          carOverlay.setPosition(coord3857);
+          centerOnScreen(coord3857);
+
+          /*  RUMBO:
+              - iOS suele dar heading (grados 0 =N), si no: lo calculamos    */
+          let headingDeg = heading;
+          if (headingDeg == null && lastCoord) {
+            const [lon0, lat0] = lastCoord;
+            const φ1 = ol.math.toRadians(lat0), φ2 = ol.math.toRadians(latitude);
+            const Δλ = ol.math.toRadians(longitude - lon0);
+            headingDeg = (Math.atan2(
+              Math.sin(Δλ) * Math.cos(φ2),
+              Math.cos(φ1) * Math.sin(φ2) -
+              Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ)
+            ) * 180 / Math.PI + 360) % 360;
+          }
+
+          if (headingDeg != null && !isNaN(headingDeg)) {
+            const headingRad = ol.math.toRadians(headingDeg);
+            // Negativo porque queremos que el “Norte” apunte siempre arriba
+            view.setRotation(-headingRad);
+          }
+
+          lastCoord = [longitude, latitude];
+        },
+        err => {
+          statusEl.textContent = 'Error: ' + err.message;
+          console.error(err);
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 1000,
+          timeout: 10000
+        }
+      );
+    } else {
+      statusEl.textContent = 'Geolocalización no soportada';
+    }
+
+    /************** 4. Opcional: simular *************
+       Si no hay GPS (ordenador sin permiso), descomenta para demo:
+    setInterval(() => {
+      const t = Date.now() / 1000;
+      const lat = 40.41678 + 0.0002 * Math.sin(t / 5);
+      const lon = -3.70379 + 0.0002 * Math.cos(t / 5);
+      navigator.geolocation.getCurrentPosition = cb => cb({
+        coords: { latitude: lat, longitude: lon, heading: (t*10)%360, speed: 5 }
+      });
+    }, 1000);
+    **************************************************/
+  </script>
+</body>
+</html>

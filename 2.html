@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Navegador GPS con flecha fija (OpenLayers 10)</title>
+
+<!-- OpenLayers -->
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/ol@10.5.0/ol.css">
+<script src="https://cdn.jsdelivr.net/npm/ol@10.5.0/dist/ol.js"></script>
+
+<style>
+  html,body {height:100%;margin:0;overflow:hidden;}
+  #map     {width:100%;height:100%;}
+
+  /* Flecha (SVG embebida) → nunca falla la carga */
+  .car {
+    width:40px;height:40px;
+    transform:translate(-50%,-50%);  /* centrada en su coordenada */
+    z-index:1000;
+  }
+  .car svg {width:100%;height:100%;}
+  #status {
+    position:absolute;top:.6rem;left:50%;
+    transform:translateX(-50%);
+    background:rgba(0,0,0,.6);
+    color:#fff;padding:.4rem .9rem;border-radius:8px;
+    font-size:.8rem;pointer-events:none;
+  }
+</style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="status">Solicitando GPS…</div>
+
+<script>
+/* ---------- 1. Ayudas matemáticas (sin ol.math) ---------- */
+const  toRad = d => d*Math.PI/180,
+       toDeg = r => r*180/Math.PI;
+
+/* Rumbo geodésico (°) ⟵ lon/lat pares en grados WGS-84 */
+function bearingDeg(lon1,lat1,lon2,lat2){
+  const φ1=toRad(lat1), φ2=toRad(lat2), Δλ=toRad(lon2-lon1);
+  const y=Math.sin(Δλ)*Math.cos(φ2);
+  const x=Math.cos(φ1)*Math.sin(φ2) -
+           Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+  return (toDeg(Math.atan2(y,x))+360)%360;
+}
+
+/* ---------- 2. Mapa base ---------- */
+const view = new ol.View({
+  center: ol.proj.fromLonLat([-3.70379,40.41678]), /* arranque Madrid */
+  zoom: 17,
+  rotation: 0
+});
+const map = new ol.Map({
+  target: 'map',
+  layers:[ new ol.layer.Tile({source:new ol.source.OSM()}) ],
+  view
+});
+
+/* ---------- 3. Flecha fija (Overlay) ---------- */
+const carEl = document.createElement('div');
+carEl.className='car';
+carEl.innerHTML = `
+<svg viewBox="0 0 24 24">
+  <path d="M12 2 L3 22 L12 17 L21 22 Z" fill="#ff3b30"/>
+</svg>`;
+const carOverlay = new ol.Overlay({
+  element: carEl,
+  positioning: 'center-center',
+  rotateWithView: true,  /* flecha permanece apuntando “arriba” */
+  stopEvent: false
+});
+map.addOverlay(carOverlay);
+
+/* Mantiene la flecha fija en (50 %, 75 %) de la pantalla */
+function stickToLowerCenter(coord3857){
+  const size = map.getSize();
+  view.centerOn(coord3857, size, [size[0]/2, size[1]*0.75]); //  [oai_citation:0‡openlayers.org](https://openlayers.org/en/latest/examples/center.html?utm_source=chatgpt.com)
+}
+
+/* ---------- 4. Geolocalización ---------- */
+const status = document.getElementById('status');
+let lastLonLat = null;
+
+if ('geolocation' in navigator){
+  navigator.geolocation.watchPosition(
+    ({coords})=>{
+      status.textContent='';
+      const {latitude, longitude, heading} = coords;
+      const coord = ol.proj.fromLonLat([longitude, latitude]);
+
+      /* Posicionar flecha y centrar vista */
+      carOverlay.setPosition(coord);
+      stickToLowerCenter(coord);
+
+      /* Calcular rumbo */
+      let hdg = heading; /* puede ser null en iOS si vas lento */
+      if (hdg==null && lastLonLat){
+        hdg = bearingDeg(lastLonLat[0], lastLonLat[1], longitude, latitude);
+      }
+      if (hdg!=null && !isNaN(hdg)){
+        view.setRotation(-toRad(hdg));      // mapa gira, flecha se mantiene
+      }
+      lastLonLat=[longitude, latitude];
+    },
+    err=>{
+      status.textContent='Error GPS: '+err.message;
+      console.error(err);
+    },
+    {enableHighAccuracy:true, maximumAge:1000, timeout:10000}
+  );
+}else{
+  status.textContent='Este navegador no soporta Geolocalización.';
+}
+
+/* ---------- 5. DEMO en escritorio (comodín) ----------
+   Descomenta este bloque si quieres simular movimiento con el ratón
+   y no tienes GPS en el ordenador:
+
+setInterval(()=>{
+  const t=Date.now()/1000;
+  const lat=40.41678+0.0005*Math.sin(t/8);
+  const lon=-3.70379+0.0005*Math.cos(t/8);
+  navigator.geolocation.getCurrentPosition = cb => cb({
+    coords:{latitude:lat,longitude:lon,heading:(t*15)%360,accuracy:5}
+  });
+},1000);
+------------------------------------------------------- */
+</script>
+</body>
+</html>

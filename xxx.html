@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+
+    <!-- LÍNEA CRUCIAL REINTRODUCIDA: PERMISO PARA CARGAR EL MAPA Y LA RUTA -->
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self'; 
+        script-src 'self' https://cdn.jsdelivr.net; 
+        style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; 
+        img-src 'self' data: https://*.tile.openstreetmap.org;
+        connect-src 'self' https://router.project-osrm.org;">
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Navegador GPS Fijo</title>
+    
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v7.3.0/ol.css">
+    <script src="https://cdn.jsdelivr.net/npm/ol@v7.3.0/dist/ol.js"></script>
+    
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+            background: #e0e0e0; /* Color de fondo mientras carga */
+        }
+
+        /* La flecha de navegación FIJA en la pantalla */
+        #position-marker {
+            position: fixed;
+            left: 50%;
+            bottom: 20%;
+            width: 0;
+            height: 0;
+            border-left: 15px solid transparent;
+            border-right: 15px solid transparent;
+            border-top: 25px solid #007bff;
+            filter: drop-shadow(0px 3px 5px rgba(0,0,0,0.5));
+            transform: translateX(-50%);
+            z-index: 1000;
+        }
+        
+        #info-overlay {
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.75);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 20px;
+            text-align: center;
+            z-index: 1001;
+            font-family: sans-serif;
+            font-size: 14px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            min-width: 200px;
+        }
+
+        .ol-control { display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+    <div id="position-marker"></div>
+    <div id="info-overlay">Inicializando...</div>
+
+    <script>
+        // --- CONFIGURACIÓN DE LA RUTA ---
+        const startCoords = [-3.703790, 40.416775]; // Madrid: Puerta del Sol
+        const endCoords = [-3.693352, 40.419208];   // Madrid: Plaza de Cibeles
+
+        // --- REFERENCIAS Y ESTADO ---
+        const infoOverlay = document.getElementById('info-overlay');
+        let map, view;
+
+        window.onload = async () => {
+            
+            // 1. INICIALIZAR EL MAPA
+            infoOverlay.textContent = 'Cargando mapa...';
+            const routeSource = new ol.source.Vector();
+            
+            view = new ol.View({
+                center: ol.proj.fromLonLat(startCoords),
+                zoom: 18,
+                rotation: 0,
+            });
+
+            map = new ol.Map({
+                target: 'map',
+                layers: [
+                    new ol.layer.Tile({ source: new ol.source.OSM() }),
+                    new ol.layer.Vector({
+                        source: routeSource,
+                        style: new ol.style.Style({
+                            stroke: new ol.style.Stroke({
+                                color: 'rgba(255, 0, 0, 0.8)', // Ruta en rojo brillante
+                                width: 8,
+                            })
+                        })
+                    })
+                ],
+                view: view,
+                controls: [],
+                interactions: ol.interaction.defaults({
+                    dragPan: false, pinchZoom: false, mouseWheelZoom: false
+                })
+            });
+
+            // 2. OBTENER Y DIBUJAR LA RUTA
+            infoOverlay.textContent = 'Calculando ruta...';
+            try {
+                const url = `https://router.project-osrm.org/route/v1/driving/${startCoords[0]},${startCoords[1]};${endCoords[0]},${endCoords[1]}?geometries=geojson`;
+                const response = await fetch(url);
+                const json = await response.json();
+                
+                if (json.code !== 'Ok' || !json.routes.length) {
+                    throw new Error('No se encontró la ruta.');
+                }
+                
+                const routeFeature = new ol.format.GeoJSON().readFeature(json.routes[0].geometry, {
+                    dataProjection: 'EPSG:4326', featureProjection: 'EPSG:3857'
+                });
+                routeSource.addFeature(routeFeature);
+                infoOverlay.textContent = 'Buscando señal GPS...';
+            } catch (error) {
+                console.error('Error al obtener la ruta:', error);
+                infoOverlay.textContent = 'Error al cargar la ruta.';
+                return;
+            }
+
+            // 3. INICIAR NAVEGACIÓN GPS
+            if (!navigator.geolocation) {
+                infoOverlay.textContent = 'Geolocalización no soportada.';
+                return;
+            }
+
+            let firstGpsUpdate = true;
+            navigator.geolocation.watchPosition((position) => {
+                const { latitude, longitude, speed, heading, accuracy } = position.coords;
+                const coords = [longitude, latitude];
+                
+                const speedKmh = speed ? Math.round(speed * 3.6) : 0;
+                infoOverlay.textContent = `Velocidad: ${speedKmh} km/h | Precisión: ${Math.round(accuracy)}m`;
+                
+                // Centra el mapa en la posición del GPS
+                view.setCenter(ol.proj.fromLonLat(coords));
+
+                // Rota el mapa según la dirección del movimiento
+                if (heading !== null) {
+                    // OpenLayers rota en sentido antihorario, el GPS da heading horario.
+                    // Por eso no se necesita el signo negativo.
+                    view.setRotation(heading * Math.PI / 180);
+                }
+                
+                // En la primera actualización, ajusta el zoom para ver mejor
+                if (firstGpsUpdate) {
+                    view.setZoom(18);
+                    firstGpsUpdate = false;
+                }
+
+            }, (error) => {
+                infoOverlay.textContent = `Error de GPS: ${error.message}`;
+            }, { enableHighAccuracy: true });
+        };
+
+    </script>
+</body>
+</html>

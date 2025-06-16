@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Avisador">
+    
+    <title>Avisador de Curvas Inteligente</title>
+    
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v7.3.0/ol.css">
+    <script src="https://cdn.jsdelivr.net/npm/ol@v7.3.0/dist/ol.js"></script>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; overflow: hidden; height: 100vh; }
+        #main-container { display: flex; flex-direction: column; width: 100%; height: 100%; }
+        #map, #dashboard { height: 50%; width: 100%; position: relative; transition: height 0.35s ease-in-out; }
+        #app-screen { transition: background-color 0.5s ease-in-out; display: flex; flex-direction: column; height: 100%; }
+        .status-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        
+        .map-focused #map { height: 100%; }
+        .map-focused #dashboard { height: 0%; overflow: hidden; }
+        
+        .dashboard-focused #map { height: 0%; }
+        .dashboard-focused #dashboard { height: 100%; }
+
+        .view-toggle-btn {
+            position: absolute; top: 0.5rem; right: 0.5rem; z-index: 1001;
+            background-color: rgba(255, 255, 255, 0.7); backdrop-filter: blur(4px);
+            width: 2.25rem; height: 2.25rem; border-radius: 9999px;
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+        }
+        .icon-shrink { display: none; }
+        .map-focused #map .icon-expand, .dashboard-focused #dashboard .icon-expand { display: none; }
+        .map-focused #map .icon-shrink, .dashboard-focused #dashboard .icon-shrink { display: block; }
+
+        .ol-control { display: none; }
+
+        #dashboard-content-wrapper { display: grid; height: 100%; grid-template-rows: 1fr auto; }
+        #main-widgets-container { align-self: center; }
+        #status-bar-container { align-self: end; }
+        
+        .dashboard-focused #app-screen { overflow-y: auto; padding-top: 1rem; padding-bottom: 1rem; justify-content: center; }
+        .dashboard-focused #dashboard-content-wrapper { display: flex; flex-direction: column; justify-content: center; align-items: center; height: auto; gap: 1rem; }
+
+        #vehicle-arrow {
+            position: absolute;
+            left: 50%;
+            bottom: 25%;
+            width: 28px;
+            height: 28px;
+            z-index: 1000;
+            pointer-events: none;
+            transform: translateX(-50%) rotate(0deg); 
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div id="main-container">
+        <div id="map">
+            <svg id="vehicle-arrow" viewBox="0 0 24 24" fill="#2563eb" stroke="white" stroke-width="1.5">
+                <path d="M12 2L2.5 21.5L12 17L21.5 21.5L12 2Z"/>
+            </svg>
+            <button id="map-view-btn" class="view-toggle-btn">
+                <svg class="icon-expand h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9m11.25 11.25v-4.5m0 4.5h-4.5m4.5 0L15 15M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15m11.25-11.25v4.5m0-4.5h-4.5m4.5 0L15 9" /></svg>
+                <svg class="icon-shrink h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9V4.5M15 9h4.5M15 9l5.25-5.25M15 15v4.5M15 15h4.5M15 15l5.25 5.25" /></svg>
+            </button>
+        </div>
+        <div id="dashboard">
+             <!-- ... HTML del dashboard sin cambios ... -->
+        </div>
+    </div>
+    
+    <script>
+        const OVERPASS_API_URL = "https://overpass-api.de/api/interpreter";
+        const ANALYSIS_RADIUS_METERS = 250; 
+        const ANALYSIS_INTERVAL_MS = 3000;
+        const MIN_GPS_ACCURACY_FOR_ANALYSIS = 40;
+        const VEHICLE_MARKER_POSITION_RATIO = 0.25; // Anclaje de la flecha
+        // ... El resto de constantes ...
+
+        let state = { /* ... El estado ... */ };
+        
+        // ... Variables y referencias al DOM ...
+
+        function animationLoop() {
+            if (!state.isMoving) return;
+            // Interpolar para suavizar
+            const LERP_FACTOR = 0.1; 
+            state.smoothedLat += (state.targetLat - state.smoothedLat) * LERP_FACTOR;
+            state.smoothedLon += (state.targetLon - state.smoothedLon) * LERP_FACTOR;
+            let headingDiff = state.targetHeading - state.smoothedHeading;
+            if (headingDiff > 180) headingDiff -= 360;
+            if (headingDiff < -180) headingDiff += 360;
+            state.smoothedHeading += headingDiff * LERP_FACTOR;
+            
+            updateMapAndView();
+            requestAnimationFrame(animationLoop);
+        }
+
+        // --> LÓGICA DE CÁMARA Y POSICIÓN RESTAURADA Y MEJORADA
+        function updateMapAndView() {
+            if (!state.isMapInitialized || state.smoothedLat === null) return;
+
+            const smoothedGpsCoords = ol.proj.fromLonLat([state.smoothedLon, state.smoothedLat]);
+            let currentPositionOnMap = smoothedGpsCoords;
+            let currentHeading = state.smoothedHeading;
+
+            if (state.closestRoadObject) {
+                const roadLine = new ol.geom.LineString(state.closestRoadObject.geometry.map(p => ol.proj.fromLonLat([p.lon, p.lat])));
+                currentPositionOnMap = roadLine.getClosestPoint(smoothedGpsCoords);
+                const headingInfo = getHeadingOnLineAtPoint(roadLine, currentPositionOnMap);
+                if (headingInfo) {
+                    currentHeading = headingInfo.heading;
+                }
+            }
+
+            const mapRotationRad = -(currentHeading * (Math.PI / 180));
+            
+            // Lógica de cámara de tu código original, que funciona bien con el zoom
+            const mapSize = state.map.getSize();
+            if (mapSize && mapSize[1] > 0) {
+                const resolution = state.view.getResolution();
+                // Calcula el desplazamiento en píxeles para mover el centro de la vista
+                const pixelOffset = mapSize[1] * (VEHICLE_MARKER_POSITION_RATIO - 0.5);
+                // Convierte el desplazamiento de píxeles a unidades del mapa
+                const mapOffset = pixelOffset * resolution;
+
+                // Calcula el nuevo centro de la vista, compensando la rotación
+                const viewCenter = [
+                    currentPositionOnMap[0] - mapOffset * Math.sin(mapRotationRad),
+                    currentPositionOnMap[1] - mapOffset * Math.cos(mapRotationRad)
+                ];
+
+                state.view.setCenter(viewCenter);
+                state.view.setRotation(mapRotationRad);
+            }
+        }
+        
+        function drawRoadOnMap(roadObject) { /* ... */ }
+
+        function initializeMap() { /* ... */ }
+
+        // --> LÓGICA DE GEOLOCALIZACIÓN CORREGIDA
+        function startGeolocation() {
+            navigator.geolocation.watchPosition((position) => {
+                const { latitude, longitude, speed, accuracy, heading } = position.coords;
+                const isFirstFix = state.rawLat === null;
+
+                // **CORRECCIÓN**: Procesamos siempre el punto, y solo mostramos el aviso si la señal es débil.
+                // Ya no se bloquea la app si los primeros puntos son imprecisos.
+                if (accuracy > MIN_GPS_ACCURACY_FOR_ANALYSIS) {
+                    if (!state.isAnalyzing) locationStatus.textContent = `Señal GPS débil (${Math.round(accuracy)}m)`;
+                } else {
+                    if (!state.isAnalyzing) locationStatus.textContent = "GPS Activo";
+                }
+
+                state.rawLat = latitude; 
+                state.rawLon = longitude;
+                state.currentSpeed = speed !== null ? speed * 3.6 : state.currentSpeed;
+                state.currentAccuracy = accuracy;
+                
+                let newHeading = null;
+                try {
+                    const validNativeHeading = heading !== null && state.currentSpeed > 5;
+                    newHeading = validNativeHeading ? heading : calculateUserHeading();
+                } catch (e) {
+                    console.error("Error calculating heading:", e);
+                }
+
+                if (newHeading !== null) {
+                    state.targetHeading = newHeading;
+                }
+
+                if (isFirstFix) {
+                    state.smoothedLat = latitude;
+                    state.smoothedLon = longitude;
+                    state.smoothedHeading = state.targetHeading;
+                    state.view.setZoom(18);
+                    
+                    locationStatus.classList.remove('status-pulse');
+                    state.currentAlertLevel = 'safe'; // El dashboard cambia de color
+                    updateUI();
+                    
+                    analysisLoop(true); // Lanzar análisis INMEDIATO para dibujar la carretera
+                }
+                
+                state.targetLat = latitude;
+                state.targetLon = longitude;
+
+                if (!state.isMoving) {
+                    state.isMoving = true;
+                    requestAnimationFrame(animationLoop);
+                }
+                
+                state.locationHistory.push({ lat: latitude, lon: longitude, time: Date.now() });
+                if (state.locationHistory.length > 10) state.locationHistory.shift();
+                
+            }, (error) => { locationStatus.textContent = `Error de GPS: ${error.message}`; }, 
+               { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+        }
+
+        async function analysisLoop(isImmediate = false) {
+             // ... Lógica de análisis sin cambios, ahora se llamará correctamente ...
+        }
+        
+        function setViewState(view) {
+            state.currentViewState = view;
+            mainContainer.classList.remove('map-focused', 'dashboard-focused');
+            if (view === 'map') mainContainer.classList.add('map-focused');
+            else if (view === 'dashboard') mainContainer.classList.add('dashboard-focused');
+            setTimeout(() => { if (state.map) state.map.updateSize(); }, 400);
+        }
+        
+        function calculateUserHeading(){
+            if(state.locationHistory.length < 2) return null;
+            const p1 = state.locationHistory[0];
+            const p2 = state.locationHistory[state.locationHistory.length - 1]; 
+            if((Date.now() - p2.time > 4000) || state.currentSpeed < 5) return null;
+            return getAngleBetweenPoints(p1, p2);
+        }
+        
+        // ... El resto de funciones ...
+ 
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeMap();
+            if ('geolocation' in navigator) {
+                startGeolocation();
+            } else {
+                locationStatus.textContent = "Geolocalización no soportada.";
+            }
+            setInterval(() => analysisLoop(false), ANALYSIS_INTERVAL_MS);
+            setDrivingMode(state.drivingMode);
+        
+            mapViewBtn.addEventListener('click', () => setViewState(state.currentViewState === 'map' ? 'split' : 'map'));
+            dashboardViewBtn.addEventListener('click', () => setViewState(state.currentViewState === 'dashboard' ? 'split' : 'dashboard'));
+
+            modeButtons.forEach(button => button.addEventListener('click', () => setDrivingMode(button.dataset.mode)));
+            document.body.addEventListener('click', initializeAudioContext, { once: true });
+            document.body.addEventListener('touchstart', initializeAudioContext, { once: true });
+        });
+    </script>
+</body>
+</html>

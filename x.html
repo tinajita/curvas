@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Navegador GPS</title>
+    
+    <!-- Librerías del código que sí funciona (OpenLayers v7.3.0) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v7.3.0/ol.css">
+    <script src="https://cdn.jsdelivr.net/npm/ol@v7.3.0/dist/ol.js"></script>
+    
+    <style>
+        /* Estilos simplificados para ocupar toda la pantalla */
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            overflow: hidden; /* Evita barras de scroll */
+            font-family: Arial, sans-serif;
+            background-color: #333;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+            background: #f2f2f2;
+        }
+        
+        /* Panel de estado para dar feedback al usuario */
+        #status {
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 20px;
+            text-align: center;
+            z-index: 1001;
+            font-size: 14px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        }
+
+        /* Oculta los controles por defecto de OpenLayers */
+        .ol-control { 
+            display: none; 
+        }
+    </style>
+</head>
+<body>
+
+    <!-- El mapa ocupará todo el espacio -->
+    <div id="map"></div>
+    
+    <!-- El panel de estado para mensajes -->
+    <div id="status">Inicializando...</div>
+
+    <script>
+        // --- CONFIGURACIÓN ---
+
+        // 1. DEFINE LA RUTA QUE QUIERES MOSTRAR
+        // Coordenadas en formato [longitud, latitud]
+        const startCoords = [-3.703790, 40.416775]; // Madrid: Puerta del Sol
+        const endCoords = [-3.693352, 40.419208];   // Madrid: Plaza de Cibeles
+
+        // 2. POSICIÓN VERTICAL DEL MARCADOR (0.5 = centro, 0.75 = 75% desde arriba)
+        // Este valor controla qué tan abajo aparece la flecha en la pantalla.
+        const MARKER_POSITION_RATIO = 0.75; 
+
+        // --- REFERENCIAS A ELEMENTOS Y ESTADO GLOBAL ---
+        const statusDiv = document.getElementById('status');
+        let state = {
+            map: null,
+            view: null,
+            vehicleVectorSource: null,
+            routeVectorSource: null,
+            vehicleMarker: null,
+            isMapInitialized: false,
+            currentHeading: 0,
+        };
+
+        // --- LÓGICA DE LA APLICACIÓN ---
+
+        /**
+         * Inicializa el mapa de OpenLayers y sus capas.
+         */
+        function initializeMap() {
+            if (state.isMapInitialized) return;
+
+            state.view = new ol.View({
+                center: ol.proj.fromLonLat(startCoords),
+                zoom: 16,
+                constrainRotation: false, // Permite la rotación libre
+            });
+
+            // Capa para la ruta que vamos a descargar
+            state.routeVectorSource = new ol.source.Vector();
+            const routeLayer = new ol.layer.Vector({
+                source: state.routeVectorSource,
+                style: new ol.style.Style({
+                    stroke: new ol.style.Stroke({
+                        color: 'rgba(20, 120, 255, 0.8)', // Azul para la ruta
+                        width: 9,
+                        lineCap: 'round'
+                    })
+                }),
+                zIndex: 5 // La ruta por debajo del vehículo
+            });
+
+            // Capa para el marcador del vehículo (la flecha)
+            state.vehicleVectorSource = new ol.source.Vector();
+            const vehicleLayer = new ol.layer.Vector({
+                source: state.vehicleVectorSource,
+                zIndex: 10 // El vehículo por encima de todo
+            });
+
+            // El mapa base de OpenStreetMap
+            const rasterLayer = new ol.layer.Tile({
+                source: new ol.source.OSM()
+            });
+
+            // Creamos el marcador (la "flechita")
+            state.vehicleMarker = new ol.Feature();
+            state.vehicleMarker.setStyle(new ol.style.Style({
+                image: new ol.style.RegularShape({
+                    fill: new ol.style.Fill({ color: '#2563eb' }), // Azul sólido
+                    stroke: new ol.style.Stroke({ color: 'white', width: 2 }),
+                    points: 3, // 3 puntos = triángulo
+                    radius: 14,
+                    rotation: 0,
+                    angle: 0
+                })
+            }));
+            state.vehicleVectorSource.addFeature(state.vehicleMarker);
+
+            // Creamos el mapa final
+            state.map = new ol.Map({
+                target: 'map',
+                layers: [rasterLayer, routeLayer, vehicleLayer],
+                view: state.view,
+                controls: [] // Sin controles
+            });
+
+            state.isMapInitialized = true;
+            statusDiv.textContent = "Mapa inicializado. Obteniendo ruta...";
+        }
+
+        /**
+         * Obtiene la geometría de la ruta desde OSRM y la dibuja en el mapa.
+         */
+        async function getAndDrawRoute() {
+            const url = `https://router.project-osrm.org/route/v1/driving/${startCoords[0]},${startCoords[1]};${endCoords[0]},${endCoords[1]}?geometries=geojson`;
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`Error en la respuesta de OSRM: ${response.status}`);
+                const json = await response.json();
+                
+                if (json.code !== 'Ok' || !json.routes || json.routes.length === 0) {
+                    throw new Error("No se pudo calcular la ruta.");
+                }
+
+                const routeFeature = new ol.format.GeoJSON().readFeature(json.routes[0].geometry, {
+                    dataProjection: 'EPSG:4326',
+                    featureProjection: 'EPSG:3857'
+                });
+                
+                state.routeVectorSource.addFeature(routeFeature);
+                statusDiv.textContent = "Ruta cargada. Esperando señal GPS...";
+
+            } catch (error) {
+                console.error("Error al obtener la ruta:", error);
+                statusDiv.textContent = "Error al calcular la ruta. Revisa las coordenadas.";
+            }
+        }
+
+        /**
+         * Inicia el seguimiento por GPS y actualiza el mapa.
+         */
+        function startGpsNavigation() {
+            if (!navigator.geolocation) {
+                statusDiv.textContent = "Geolocalización no soportada.";
+                return;
+            }
+
+            navigator.geolocation.watchPosition((position) => {
+                const { latitude, longitude, speed, accuracy, heading } = position.coords;
+
+                if (statusDiv.textContent.includes("Esperando")) {
+                    statusDiv.textContent = "¡Señal GPS activa!";
+                    // Anima la vista a la primera posición del GPS
+                    state.view.animate({
+                        center: ol.proj.fromLonLat([longitude, latitude]),
+                        zoom: 18,
+                        duration: 1500
+                    });
+                }
+                
+                if (accuracy > 30) {
+                    statusDiv.textContent = `Señal GPS débil (Precisión: ${Math.round(accuracy)}m)`;
+                }
+
+                const currentPosition = ol.proj.fromLonLat([longitude, latitude]);
+                const currentSpeedKmh = speed !== null ? speed * 3.6 : 0;
+                
+                // Usa el 'heading' del GPS si está disponible y nos movemos. Si no, lo mantiene.
+                const newHeading = (heading !== null && currentSpeedKmh > 3) ? heading : state.currentHeading;
+                state.currentHeading = newHeading;
+
+                // Actualiza la posición y rotación de la flecha
+                state.vehicleMarker.setGeometry(new ol.geom.Point(currentPosition));
+                const vehicleRotationRad = newHeading * (Math.PI / 180);
+                state.vehicleMarker.getStyle().getImage().setRotation(vehicleRotationRad);
+
+                // --- ESTA ES LA LÓGICA CLAVE DEL CÓDIGO QUE FUNCIONA ---
+                // Mueve y rota el *mapa* para que la flecha parezca fija.
+
+                const mapRotationRad = -vehicleRotationRad; // El mapa rota en sentido contrario a la flecha
+                const mapSize = state.map.getSize();
+
+                if (mapSize && mapSize[1] > 0) {
+                    const resolution = state.view.getResolution();
+                    // Calcula el desplazamiento en píxeles desde el centro verdadero de la pantalla
+                    const pixelOffset = mapSize[1] * (MARKER_POSITION_RATIO - 0.5);
+                    // Convierte el desplazamiento de píxeles a unidades del mapa
+                    const mapOffset = pixelOffset * resolution;
+
+                    // Calcula el nuevo centro de la vista del mapa aplicando el desplazamiento
+                    // en la dirección opuesta a la que mira el vehículo.
+                    const viewCenter = [
+                        currentPosition[0] - mapOffset * Math.sin(mapRotationRad),
+                        currentPosition[1] - mapOffset * Math.cos(mapRotationRad)
+                    ];
+
+                    // Anima la vista a su nueva posición y rotación
+                    state.view.animate({
+                        center: viewCenter,
+                        rotation: mapRotationRad,
+                        duration: 400 // Una animación corta para dar fluidez
+                    });
+                }
+
+            }, (error) => {
+                statusDiv.textContent = `Error de GPS: ${error.message}`;
+            }, { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 });
+        }
+        
+        // --- INICIO DE LA APLICACIÓN ---
+        document.addEventListener('DOMContentLoaded', async () => {
+            initializeMap();
+            await getAndDrawRoute();
+            startGpsNavigation();
+        });
+
+    </script>
+</body>
+</html>
